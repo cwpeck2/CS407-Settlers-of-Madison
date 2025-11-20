@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SettlersOfMadison"
+rootProject.name = "Settlers of Madison"
 include(":app")
  

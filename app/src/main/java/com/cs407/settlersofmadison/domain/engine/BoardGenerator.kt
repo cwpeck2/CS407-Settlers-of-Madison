@@ -27,13 +27,13 @@ fun tinyBoard(): List<Tile> {
     )
 
     val resources = listOf(
-        Resource.CULTURE,
-        Resource.TIMBER,
-        Resource.STONE,
-        Resource.FOOD,
-        Resource.TECH,
-        Resource.TIMBER,
-        Resource.FOOD
+        Resource.WHEAT,
+        Resource.WOOD,
+        Resource.BRICK,
+        Resource.SHEEP,
+        Resource.ORE,
+        Resource.WOOD,
+        Resource.SHEEP
     )
 
     val numbers = listOf(6, 8, 5, 9, 10, 4, 11)

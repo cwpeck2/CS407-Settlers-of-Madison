@@ -37,6 +37,9 @@ object GameActionCodec {
 
         GameAction.EndTurn ->
             "END_TURN"
+
+        GameAction.StartGame ->
+            "START_GAME"
     }
 
     // incoming text from the wire
@@ -65,6 +68,9 @@ object GameActionCodec {
 
             raw == "END_TURN" ->
                 GameAction.EndTurn
+
+            raw == "START_GAME" ->
+                GameAction.StartGame
 
             else -> null
         }

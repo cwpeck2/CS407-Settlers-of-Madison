@@ -12,17 +12,32 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.cs407.settlersofmadison.network.ConnState
 import com.cs407.settlersofmadison.ui.components.ScreenImageBackground
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
+import com.cs407.settlersofmadison.game.state.GamePhase
+import com.cs407.settlersofmadison.game.state.GameAction
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun JoinLobbyScreen(
     vm: LobbyViewModel,
-    onBackToMain: () -> Unit
+    onBackToMain: () -> Unit,
+    onGameStarted: () -> Unit
 ) {
     val state by vm.state.collectAsState()
     val localReady by vm.localReady.collectAsState(initial = false)
     val peerReady by vm.peerReady.collectAsState(initial = false)
 
     val isConnected = state == ConnState.Connected
+
+    val gameState by vm.gameManager.state.collectAsState()
+
+    LaunchedEffect(gameState.phase) {
+        if (gameState.phase == GamePhase.PLAY) {
+            onGameStarted()
+        }
+    }
 
     ScreenImageBackground(imageRes = R.drawable.join_room) {
         Column(

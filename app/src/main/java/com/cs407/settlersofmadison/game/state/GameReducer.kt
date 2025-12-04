@@ -23,6 +23,9 @@ fun applyGameAction(old: GameState, action: GameAction): GameState =
 
         is GameAction.EndTurn ->
             applyEndTurn(old)
+
+        GameAction.StartGame ->
+            applyStartGame(old)
     }
 
 /*  Helpers for specific actions                                             */
@@ -127,4 +130,10 @@ private fun applyRollDice(
 private fun applyEndTurn(old: GameState): GameState {
     val next = if (old.turn == "host") "guest" else "host"
     return old.copy(turn = next)
+}
+
+private fun applyStartGame(old: GameState): GameState {
+    // For now we just switch to PLAY and clear lastRoll
+    if (old.phase == GamePhase.PLAY) return old
+    return old.copy(phase = GamePhase.PLAY, lastRoll = null)
 }

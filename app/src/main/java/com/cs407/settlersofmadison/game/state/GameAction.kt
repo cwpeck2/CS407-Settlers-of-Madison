@@ -26,4 +26,6 @@ sealed interface GameAction {
     ) : GameAction
 
     data object EndTurn : GameAction
+
+    data object StartGame : GameAction
 }

@@ -77,8 +77,11 @@ fun AppNav() {
             JoinLobbyScreen(
                 vm = lobbyVm,
                 onBackToMain = {
-                    lobbyVm.close()
+                    lobbyVm.leave()
                     navController.popBackStack("main", inclusive = false)
+                },
+                onGameStarted = {
+                    navController.navigate("game")
                 }
             )
         }

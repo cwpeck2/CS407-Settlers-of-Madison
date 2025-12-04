@@ -11,6 +11,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.cs407.settlersofmadison.network.ConnState
 import com.cs407.settlersofmadison.ui.components.ScreenImageBackground
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
+import com.cs407.settlersofmadison.game.state.GamePhase
+import com.cs407.settlersofmadison.game.state.GameAction
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -23,7 +28,16 @@ fun HostLobbyScreen(
     val peerReady by vm.peerReady.collectAsState(initial = false)
 
     val isConnected = state == ConnState.Connected
-    val canStart = isConnected && peerReady   // 👈 only start when guest is ready
+    val canStart = isConnected && peerReady
+
+    val gameState by vm.gameManager.state.collectAsState()
+
+    // When phase switches to PLAY (from any device), go to GameScreen
+    LaunchedEffect(gameState.phase) {
+        if (gameState.phase == GamePhase.PLAY) {
+            onStartGame()
+        }
+    }
 
     ScreenImageBackground(imageRes = com.cs407.settlersofmadison.R.drawable.create_room) {
         Column(
@@ -82,7 +96,10 @@ fun HostLobbyScreen(
                     Spacer(Modifier.height(16.dp))
 
                     Button(
-                        onClick = onStartGame,
+                        onClick = {
+                            // Host triggers network action; navigation happens via LaunchedEffect
+                            vm.gameManager.dispatchLocal(GameAction.StartGame)
+                        },
                         enabled = canStart
                     ) { Text("Start Game") }
 

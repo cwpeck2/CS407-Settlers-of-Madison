@@ -34,6 +34,10 @@ class P2PService(
 
     private val _messages = MutableStateFlow<List<String>>(emptyList())
     val messages: StateFlow<List<String>> = _messages
+
+    private val _peerReady = MutableStateFlow(false)
+    val peerReady: StateFlow<Boolean> = _peerReady
+
     private fun setState(newState: ConnState) {
         scope.launch(Dispatchers.Main) {
             _state.value = newState
@@ -41,6 +45,9 @@ class P2PService(
     }
     fun host(port: Int = 8989) {
         if (state.value != ConnState.Idle && state.value != ConnState.Closed) return
+
+        scope.launch(Dispatchers.Main) { _peerReady.value = false }
+
         setState(ConnState.Hosting)
         closed.set(false)
 
@@ -67,6 +74,9 @@ class P2PService(
 
     fun connect(hostIp: String = "10.0.2.2", port: Int = 8989) {
         if (state.value != ConnState.Idle && state.value != ConnState.Closed) return
+
+        scope.launch(Dispatchers.Main) { _peerReady.value = false }
+
         setState(ConnState.Connecting)
         closed.set(false)
 
@@ -92,8 +102,21 @@ class P2PService(
                 BufferedReader(InputStreamReader(s.getInputStream())).use { br ->
                     while (isActive && !closed.get()) {
                         val line = br.readLine() ?: break
-                        append("Peer: $line")
-                        _incoming.emit(line)
+
+                        when {
+                            line.startsWith("READY:") -> {
+                                val ready = line.substringAfter("READY:") == "1"
+                                launch(Dispatchers.Main) { _peerReady.value = ready }
+                            }
+                            line == "LEAVE" -> {
+                                append("Peer left the lobby.")
+                                break // exit loop, then close() in finally
+                            }
+                            else -> {
+                                _incoming.emit(line)
+                                append("Peer: $line")
+                            }
+                        }
                     }
                 }
             } catch (t: Throwable) {
@@ -119,17 +142,32 @@ class P2PService(
             } catch (t: Throwable) {
                 append("Send error: ${t::class.java.simpleName}: ${t.message ?: "no message"}")
                 Log.e("P2P", "send() failed", t)
-                close()
             }
         }
     }
 
+    fun setReady(ready: Boolean) {
+        send(if (ready) "READY:1" else "READY:0")
+    }
+
+    fun leave() {
+        if (state.value == ConnState.Connected) {
+            send("LEAVE")
+        }
+        close()
+    }
+
     fun close() {
         if (closed.getAndSet(true)) return
+
         try { socket?.close() } catch (_: Throwable) {}
         try { serverSocket?.close() } catch (_: Throwable) {}
         readerJob?.cancel()
-        _state.value = ConnState.Closed
+
+        scope.launch(Dispatchers.Main) {
+            _peerReady.value = false
+            _state.value = ConnState.Closed
+        }
     }
 
     private fun append(s: String) {

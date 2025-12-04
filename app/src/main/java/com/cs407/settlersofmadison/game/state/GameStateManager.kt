@@ -1,7 +1,11 @@
 package com.cs407.settlersofmadison.game.state
 
+import com.cs407.settlersofmadison.domain.model.VertexKey
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -16,20 +20,54 @@ interface GameTransport {
 }
 
 /**
- * simple text protocol for now.
- * will swap for JSON or protobuf after functionality implementation
+ * Simple text protocol for now.
+ * We'll swap for JSON / protobuf later if needed.
  */
 object GameActionCodec {
 
     // outgoing text for the wire
     fun encode(action: GameAction): String = when (action) {
         GameAction.IncrementDebugCounter -> "INC_DEBUG"
+
+        is GameAction.PlaceSettlement ->
+            "SETTLE:${action.playerId}:${action.vertex.q},${action.vertex.r},${action.vertex.corner}"
+
+        is GameAction.RollDice ->
+            "ROLL:${action.roll}"
+
+        GameAction.EndTurn ->
+            "END_TURN"
     }
 
     // incoming text from the wire
-    fun decode(raw: String): GameAction? = when (raw) {
-        "INC_DEBUG" -> GameAction.IncrementDebugCounter
-        else -> null
+    fun decode(raw: String): GameAction? {
+        return when {
+            raw == "INC_DEBUG" ->
+                GameAction.IncrementDebugCounter
+
+            raw.startsWith("SETTLE:") -> {
+                // SETTLE:<playerId>:q,r,corner
+                val parts = raw.split(":")
+                if (parts.size != 3) return null
+                val playerId = parts[1]
+                val coordParts = parts[2].split(",")
+                if (coordParts.size != 3) return null
+                val q = coordParts[0].toIntOrNull() ?: return null
+                val r = coordParts[1].toIntOrNull() ?: return null
+                val corner = coordParts[2].toIntOrNull() ?: return null
+                GameAction.PlaceSettlement(playerId, VertexKey(q, r, corner))
+            }
+
+            raw.startsWith("ROLL:") -> {
+                val value = raw.removePrefix("ROLL:").toIntOrNull() ?: return null
+                GameAction.RollDice(value)
+            }
+
+            raw == "END_TURN" ->
+                GameAction.EndTurn
+
+            else -> null
+        }
     }
 }
 

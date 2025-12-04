@@ -1,25 +1,43 @@
 package com.cs407.settlersofmadison.game.state
 
-data class GameState(
-    val debugCounter: Int = 0,
-    // TODO: val players: Map<String, PlayerState> = emptyMap(),
-    // TODO: val currentTurnPlayerId: String? = null,
-    // TODO: val board: BoardState = BoardState()
+import com.cs407.settlersofmadison.domain.engine.tinyBoard
+import com.cs407.settlersofmadison.domain.model.EdgeKey
+import com.cs407.settlersofmadison.domain.model.Resource
+import com.cs407.settlersofmadison.domain.model.Tile
+import com.cs407.settlersofmadison.domain.model.VertexKey
+
+/**
+ * Phases of the game.
+ */
+enum class GamePhase { SETUP, PLAY }
+
+/**
+ * Per-player state tracked in the game.
+ */
+data class PlayerState(
+    val id: String,
+    val name: String,
+    val resources: Map<Resource, Int> = emptyMap(),
+    val settlements: Set<VertexKey> = emptySet(),
+    val roads: Set<EdgeKey> = emptySet(),
+    val points: Int = 0
 )
 
 /**
- * All possible game actions.
- * e.g data class PlaceRoad(val playerId: String, val edgeId: String) : GameAction
+ * The full immutable game state snapshot.
  */
-sealed interface GameAction {
-    data object IncrementDebugCounter : GameAction
-}
+data class GameState(
+    val debugCounter: Int = 0,
 
-/**
- * A basic reducer - based on the current state and an action taken, returns the new state.
- */
-fun applyGameAction(old: GameState, action: GameAction): GameState =
-    when (action) {
-        GameAction.IncrementDebugCounter ->
-            old.copy(debugCounter = old.debugCounter + 1)
-    }
+    val tiles: List<Tile> = tinyBoard(),
+    val players: Map<String, PlayerState> = defaultPlayers(),
+    val turn: String = "host",                      // "host" or "guest"
+    val phase: GamePhase = GamePhase.SETUP,
+    val lastRoll: Int? = null
+)
+
+private fun defaultPlayers(): Map<String, PlayerState> =
+    mapOf(
+        "host" to PlayerState(id = "host", name = "Host"),
+        "guest" to PlayerState(id = "guest", name = "Guest")
+    )

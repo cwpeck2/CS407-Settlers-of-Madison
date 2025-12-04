@@ -1,4 +1,4 @@
-package com.cs407.settlersofmadison.ui.menu
+package com.cs407.settlersofmadison.ui.main
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope

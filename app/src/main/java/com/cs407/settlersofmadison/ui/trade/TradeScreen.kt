@@ -32,11 +32,13 @@ fun TradeInitiatorScreen(
     myResources: List<ResourceCount>,
     opponentResources: List<ResourceCount>,
     onConfirmTrade: (List<ResourceCount>, List<ResourceCount>) -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    tradeResult: String?
 ) {
     // Selected offers
     var myOffer by remember { mutableStateOf(emptyList<ResourceCount>()) }
     var theirOffer by remember { mutableStateOf(emptyList<ResourceCount>()) }
+
 
     Box(
         modifier = Modifier
@@ -51,6 +53,8 @@ fun TradeInitiatorScreen(
             contentScale = ContentScale.Crop,
             alpha = 0.25f
         )
+
+
 
         Row(
             modifier = Modifier.fillMaxSize()
@@ -87,6 +91,55 @@ fun TradeInitiatorScreen(
                 }
 
                 SummaryCard("Offering:", myOffer)
+            }
+            if (tradeResult != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.4f)),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .padding(top = 32.dp)
+                            .fillMaxWidth(0.6f),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color.White
+                        ),
+                        elevation = CardDefaults.cardElevation(8.dp),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "Trade $tradeResult",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = if (tradeResult == "accepted") Color(0xFF2E7D32) else Color(0xFFC62828)
+                            )
+
+                            Spacer(Modifier.height(12.dp))
+
+                            if (tradeResult == "accepted") {
+                                OrangeGradientButton(
+                                    text = "Return to Game Board",
+                                    backgroundRes = R.drawable.create_room,
+                                    onClick = { onCancel() },   // Navigate back to board
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+
+                            Text(
+                                text = "Close",
+                                modifier = Modifier
+                                    .padding(top = 12.dp)
+                                    .clickable { /* Dismiss */ },
+                                color = Color.Gray
+                            )
+                        }
+                    }
+                }
             }
 
             // RIGHT PANEL - Their Offer
@@ -263,7 +316,30 @@ fun TradeInitiatorPreview() {
         myResources = myResources,
         opponentResources = opponentResources,
         onConfirmTrade = { _, _ -> },
-        onCancel = {}
+        onCancel = {},
+        tradeResult = null
     )
 }
+@Preview(showBackground = true, widthDp = 900, heightDp = 420)
+@Composable
+fun TradeInitiatorNotificationPreview() {
+    val myResources = listOf(
+        ResourceCount(ResourceType.BRICK, 2),
+        ResourceCount(ResourceType.WHEAT, 3)
+    )
+    val opponentResources = listOf(
+        ResourceCount(ResourceType.BRICK, 1),
+        ResourceCount(ResourceType.WOOD, 2)
+    )
+
+    TradeInitiatorScreen(
+        myResources = myResources,
+        opponentResources = opponentResources,
+        onConfirmTrade = { _, _ -> },
+        onCancel = {},
+        tradeResult = "accepted"
+    )
+}
+
+
 

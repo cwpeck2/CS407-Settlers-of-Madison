@@ -3,18 +3,18 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.cs407.settlersofmadison.ui.main.MainMenuScreen
-import com.cs407.settlersofmadison.ui.lobby.HostSetupScreen
-import com.cs407.settlersofmadison.ui.lobby.HostLobbyScreen
-import com.cs407.settlersofmadison.ui.lobby.JoinSetupScreen
-import com.cs407.settlersofmadison.ui.lobby.JoinLobbyScreen
-import com.cs407.settlersofmadison.ui.lobby.LobbyViewModel
 import com.cs407.settlersofmadison.ui.game.GameScreen
+import com.cs407.settlersofmadison.ui.lobby.HostLobbyScreen
+import com.cs407.settlersofmadison.ui.lobby.HostSetupScreen
+import com.cs407.settlersofmadison.ui.lobby.JoinLobbyScreen
+import com.cs407.settlersofmadison.ui.lobby.JoinSetupScreen
+import com.cs407.settlersofmadison.ui.lobby.LobbyViewModel
+import com.cs407.settlersofmadison.ui.main.MainMenuScreen
 
 @Composable
 fun AppNav() {
     val navController = rememberNavController()
-    val vm: LobbyViewModel = viewModel()
+    val vm: LobbyViewModel = viewModel()   // ONE shared VM per device
 
     NavHost(
         navController = navController,
@@ -36,8 +36,6 @@ fun AppNav() {
         }
 
         composable("hostLobby") {
-            val vm: LobbyViewModel = viewModel()
-
             HostLobbyScreen(
                 vm = vm,
                 onBackToMain = {
@@ -45,11 +43,11 @@ fun AppNav() {
                     navController.popBackStack("main", inclusive = false)
                 },
                 onStartGame = {
-                    navController.navigate("game")
+                    // Host plays as "host"
+                    navController.navigate("game/host")
                 }
             )
         }
-
 
         composable("joinSetup") {
             JoinSetupScreen(
@@ -65,12 +63,18 @@ fun AppNav() {
                 onBackToMain = {
                     vm.close()
                     navController.popBackStack("main", inclusive = false)
+                },
+                onGameStarted = {
+                    // Guest plays as "guest"
+                    navController.navigate("game/guest")
                 }
             )
         }
 
-        composable("game") {
+        composable("game/{role}") { backStackEntry ->
+            val role = backStackEntry.arguments?.getString("role") ?: "host"
             GameScreen(
+                localPlayerId = role,
                 onExit = {
                     vm.leave()
                     navController.popBackStack("main", inclusive = false)

@@ -23,7 +23,7 @@ fun HostLobbyScreen(
     val peerReady by vm.peerReady.collectAsState(initial = false)
 
     val isConnected = state == ConnState.Connected
-    val canStart = isConnected && peerReady   // 👈 only start when guest is ready
+    val canStart = isConnected && peerReady   // ✅ only when guest is ready
 
     ScreenImageBackground(imageRes = com.cs407.settlersofmadison.R.drawable.create_room) {
         Column(
@@ -59,6 +59,13 @@ fun HostLobbyScreen(
                         color = Color.White
                     )
 
+                    // Debug line – keep this so you can see it flip
+                    Text(
+                        text = "Debug: peerReady=$peerReady, state=$state",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.7f)
+                    )
+
                     Spacer(Modifier.height(16.dp))
 
                     Row(
@@ -69,22 +76,27 @@ fun HostLobbyScreen(
                             label = "You (Host)",
                             active = true,
                             isHost = true,
-                            ready = true // treat host as always “ready”
+                            ready = true      // host is always "ready"
                         )
                         PlayerAvatar(
                             label = if (isConnected) "Player 2" else "Waiting…",
                             active = isConnected,
                             isHost = false,
-                            ready = peerReady
+                            ready = peerReady // ✅ should turn green when guest readies
                         )
                     }
 
                     Spacer(Modifier.height(16.dp))
 
                     Button(
-                        onClick = onStartGame,
+                        onClick = {
+                            vm.hostStartGame()
+                            onStartGame()
+                        },
                         enabled = canStart
-                    ) { Text("Start Game") }
+                    ) {
+                        Text("Start Game")
+                    }
 
                     Spacer(Modifier.height(8.dp))
 

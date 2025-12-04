@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import com.cs407.settlersofmadison.R
 
 @Composable
 fun ScreenImageBackground(@DrawableRes imageRes: Int, content: @Composable () -> Unit) {
@@ -32,4 +33,17 @@ fun GradientBackground(content: @Composable () -> Unit) {
     val c1 = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
     val c2 = MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f)
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(c1, Color.Transparent, c2)))) { content() }
+}
+@Composable
+fun GameBackground(content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize()) {
+        Image(
+            painter = painterResource(id = R.drawable.main_menu), // same map as home
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)))
+        content()
+    }
 }

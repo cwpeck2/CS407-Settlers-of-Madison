@@ -1,14 +1,14 @@
 package com.cs407.settlersofmadison.ui.lobby
 
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import com.cs407.settlersofmadison.data.p2p.ConnState
-import com.cs407.settlersofmadison.data.p2p.P2PService
+import com.cs407.settlersofmadison.data.p2p.P2PHolder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 class LobbyViewModel : ViewModel() {
-    private val p2p = P2PService(viewModelScope)
+
+    private val p2p = P2PHolder.service
 
     val state: StateFlow<ConnState> = p2p.state
     val messages = p2p.messages
@@ -19,6 +19,9 @@ class LobbyViewModel : ViewModel() {
 
     // remote ready (other device)
     val peerReady: StateFlow<Boolean> = p2p.peerReady
+
+    // game started flag (host -> guest)
+    val gameStarted: StateFlow<Boolean> = p2p.gameStarted
 
     fun host(port: Int) {
         _localReady.value = false
@@ -34,6 +37,10 @@ class LobbyViewModel : ViewModel() {
         val newReady = !_localReady.value
         _localReady.value = newReady
         p2p.setReady(newReady)
+    }
+
+    fun hostStartGame() {
+        p2p.sendStartGame()
     }
 
     fun send(msg: String) = p2p.send(msg)

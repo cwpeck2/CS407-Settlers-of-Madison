@@ -1,8 +1,15 @@
 package com.cs407.settlersofmadison.data.p2p
 
 import android.util.Log
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -17,6 +24,7 @@ enum class ConnState { Idle, Hosting, Connecting, Connected, Error, Closed }
 class P2PService(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
+
     private var serverSocket: ServerSocket? = null
     private var socket: Socket? = null
     private var readerJob: Job? = null
@@ -28,19 +36,33 @@ class P2PService(
     private val _messages = MutableStateFlow<List<String>>(emptyList())
     val messages: StateFlow<List<String>> = _messages
 
-    // 👇 peer ready status (other device)
+    // remote "ready" status (other device)
     private val _peerReady = MutableStateFlow(false)
     val peerReady: StateFlow<Boolean> = _peerReady
 
+    // "start game" signal from host to guest
+    private val _gameStarted = MutableStateFlow(false)
+    val gameStarted: StateFlow<Boolean> = _gameStarted
+
+    // Generic incoming messages (everything that isn't READY/START_GAME/LEAVE)
+    private val _incoming = MutableSharedFlow<String>()
+    val incoming: SharedFlow<String> = _incoming
+
     private fun setState(newState: ConnState) {
-        scope.launch(Dispatchers.Main) { _state.value = newState }
+        scope.launch(Dispatchers.Main) {
+            _state.value = newState
+        }
     }
 
     fun host(port: Int = 8989) {
         if (_state.value !in listOf(ConnState.Idle, ConnState.Closed)) return
-        scope.launch(Dispatchers.Main) { _peerReady.value = false }
-        setState(ConnState.Hosting)
+
         closed.set(false)
+        scope.launch(Dispatchers.Main) {
+            _peerReady.value = false
+            _gameStarted.value = false
+        }
+        setState(ConnState.Hosting)
 
         scope.launch(Dispatchers.IO) {
             try {
@@ -53,31 +75,36 @@ class P2PService(
                 val client = s.accept()
                 onSocketReady(client)
             } catch (t: Throwable) {
-                setState(ConnState.Error)
-                append("Host error: ${t::class.java.simpleName}: ${t.message ?: "no message"}")
-                Log.e("P2P", "host() failed", t)
-            } finally {
-                try { serverSocket?.close() } catch (_: Throwable) {}
-                serverSocket = null
+                if (!closed.get()) {
+                    setState(ConnState.Error)
+                    append("Host error: ${t::class.java.simpleName}: ${t.message ?: "no message"}")
+                    Log.e("P2P", "host() failed", t)
+                }
             }
         }
     }
 
-    fun connect(hostIp: String = "10.0.2.2", port: Int = 8989) {
+    fun connect(host: String, port: Int = 8989) {
         if (_state.value !in listOf(ConnState.Idle, ConnState.Closed)) return
-        scope.launch(Dispatchers.Main) { _peerReady.value = false }
-        setState(ConnState.Connecting)
+
         closed.set(false)
+        scope.launch(Dispatchers.Main) {
+            _peerReady.value = false
+            _gameStarted.value = false
+        }
+        setState(ConnState.Connecting)
 
         scope.launch(Dispatchers.IO) {
             try {
-                append("Connecting to $hostIp:$port ...")
-                val s = Socket(hostIp, port)
+                val s = Socket()
+                s.connect(InetSocketAddress(host, port), 5000)
                 onSocketReady(s)
             } catch (t: Throwable) {
-                setState(ConnState.Error)
-                append("Connect error: ${t::class.java.simpleName}: ${t.message ?: "no message"}")
-                Log.e("P2P", "connect() failed", t)
+                if (!closed.get()) {
+                    setState(ConnState.Error)
+                    append("Connect error: ${t::class.java.simpleName}: ${t.message ?: "no message"}")
+                    Log.e("P2P", "connect() failed", t)
+                }
             }
         }
     }
@@ -91,64 +118,89 @@ class P2PService(
             try {
                 BufferedReader(InputStreamReader(s.getInputStream())).use { br ->
                     while (isActive && !closed.get()) {
-                        val line = br.readLine() ?: break
+                        val raw = br.readLine() ?: break
+                        val line = raw.trim()
+                        append("RX: $line")
 
-                        // 👇 special protocol for READY messages
-                        if (line.startsWith("READY:")) {
-                            val ready = line.substringAfter("READY:") == "1"
-                            launch(Dispatchers.Main) { _peerReady.value = ready }
-                        } else if (line == "LEAVE") {
-                            append("Peer left the lobby.")
-                            break
-                        } else {
-                            append("Peer: $line")
+                        when {
+                            line == "START_GAME" -> {
+                                scope.launch(Dispatchers.Main) {
+                                    _gameStarted.value = true
+                                }
+                            }
+                            line.startsWith("READY:") -> {
+                                val ready = line.substringAfter("READY:") == "1"
+                                scope.launch(Dispatchers.Main) {
+                                    _peerReady.value = ready
+                                }
+                            }
+                            line == "LEAVE" -> {
+                                append("Peer left the lobby.")
+                                break
+                            }
+                            else -> {
+                                // Forward anything else to the game layer
+                                _incoming.emit(line)
+                            }
                         }
                     }
                 }
             } catch (t: Throwable) {
-                append("Read error: ${t::class.java.simpleName}: ${t.message ?: "no message"}")
-                Log.e("P2P", "reader failed", t)
+                if (!closed.get()) {
+                    append("Read error: ${t::class.java.simpleName}: ${t.message ?: "no message"}")
+                    Log.e("P2P", "reader failed", t)
+                }
             } finally {
-                close()
+                if (!closed.get()) {
+                    close()
+                }
             }
         }
     }
 
     fun send(text: String) {
         val s = socket ?: return
-        scope.launch {
+        scope.launch(Dispatchers.IO) {
             try {
                 val pw = PrintWriter(s.getOutputStream(), true)
                 pw.println(text)
-                append("You: $text")
+                append("TX: $text")
             } catch (t: Throwable) {
-                // ❗ IMPORTANT: don't auto-close on send error
                 append("Send error: ${t::class.java.simpleName}: ${t.message ?: "no message"}")
                 Log.e("P2P", "send() failed", t)
-                // leave the state alone; connection might already be closing
+                close()
             }
         }
     }
 
-    // Called when *this* device changes its ready state
+    // Local device toggled ready
     fun setReady(ready: Boolean) {
         send(if (ready) "READY:1" else "READY:0")
     }
 
+    // Host tells guest "go to game now"
+    fun sendStartGame() {
+        send("START_GAME")
+        scope.launch(Dispatchers.Main) {
+            _gameStarted.value = true
+        }
+    }
+
     fun leave() {
-        // graceful disconnect message
         send("LEAVE")
         close()
     }
 
     fun close() {
         if (closed.getAndSet(true)) return
+
         try { socket?.close() } catch (_: Throwable) {}
         try { serverSocket?.close() } catch (_: Throwable) {}
         readerJob?.cancel()
 
         scope.launch(Dispatchers.Main) {
             _peerReady.value = false
+            _gameStarted.value = false
             _state.value = ConnState.Closed
         }
     }

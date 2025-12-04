@@ -47,3 +47,51 @@ fun FloatingMenuButton(
         }
     }
 }
+@Composable
+fun OrangeGradientButton(
+    text: String,
+    @DrawableRes backgroundRes: Int,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(28.dp)
+
+    Button(
+        onClick = onClick,
+        modifier = modifier
+            .height(56.dp)
+            .fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.Transparent
+        ),
+        contentPadding = PaddingValues(0.dp),
+        shape = shape,
+        elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(shape)
+        ) {
+            Image(
+                painter = painterResource(backgroundRes),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize()
+            )
+
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(Color.Black.copy(alpha = 0.12f))
+            )
+
+            Text(
+                text = text,
+                style = MaterialTheme.typography.titleMedium.copy(color = Color.White),
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+    }
+}
+

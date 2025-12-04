@@ -1,8 +1,10 @@
 package com.cs407.settlersofmadison.ui.lobby
+
 import com.cs407.settlersofmadison.R
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -11,17 +13,27 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.cs407.settlersofmadison.data.p2p.ConnState
 import com.cs407.settlersofmadison.ui.components.ScreenImageBackground
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun JoinLobbyScreen(
     vm: LobbyViewModel,
-    onBackToMain: () -> Unit
+    onBackToMain: () -> Unit,
+    onGameStarted: () -> Unit
 ) {
     val state by vm.state.collectAsState()
     val localReady by vm.localReady.collectAsState(initial = false)
     val peerReady by vm.peerReady.collectAsState(initial = false)
+    val gameStarted by vm.gameStarted.collectAsState(initial = false)
 
     val isConnected = state == ConnState.Connected
+
+    // When host sends START_GAME, this flips true → navigate to Game
+    LaunchedEffect(gameStarted) {
+        if (gameStarted) {
+            onGameStarted()
+        }
+    }
 
     ScreenImageBackground(imageRes = R.drawable.join_room) {
         Column(
@@ -67,7 +79,7 @@ fun JoinLobbyScreen(
                             label = "Host",
                             active = isConnected,
                             isHost = true,
-                            ready = peerReady
+                            ready = peerReady    // host "ready" (we treat as true)
                         )
                         PlayerAvatar(
                             label = "You",
@@ -80,8 +92,8 @@ fun JoinLobbyScreen(
                     Spacer(Modifier.height(16.dp))
 
                     Button(
-                        onClick = { vm.toggleReady() },   // ✅ now only toggles ready
-                        enabled = isConnected
+                        onClick = { vm.toggleReady() },
+                        enabled = isConnected && !gameStarted
                     ) {
                         Text(if (localReady) "Unready" else "Ready Up")
                     }

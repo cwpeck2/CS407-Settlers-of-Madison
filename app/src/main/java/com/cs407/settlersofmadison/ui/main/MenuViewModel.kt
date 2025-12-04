@@ -1,13 +1,14 @@
 package com.cs407.settlersofmadison
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.cs407.settlersofmadison.data.p2p.ConnState
 import com.cs407.settlersofmadison.data.p2p.P2PService
 import kotlinx.coroutines.flow.StateFlow
 
 // This class wraps P2PService and exposes state/messages to the UI.
 class MenuViewModel : ViewModel() {
-    private val p2p = P2PService()
+    private val p2p = P2PService(viewModelScope)
 
     val state: StateFlow<ConnState> = p2p.state
     val messages: StateFlow<List<String>> = p2p.messages

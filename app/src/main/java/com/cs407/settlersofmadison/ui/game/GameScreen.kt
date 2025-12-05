@@ -72,7 +72,7 @@ fun GameScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
             // --- Header: whose turn / last roll ---
             Row(
@@ -95,7 +95,7 @@ fun GameScreen(
                     .weight(1f)
             ) {
                 val robberMode = state.phase == GamePhase.ROBBER && state.turn == localPlayerId
-
+                val roadHighlights = vm.legalRoadEdgesFor(localPlayerId, state)
                 HexBoard(
                     roomState = state,
                     currentPlayerId = state.turn,
@@ -108,7 +108,13 @@ fun GameScreen(
                     },
                     onTileTap = if (robberMode) { coord ->
                         vm.onLocalPlaceRobber(localPlayerId, coord)
-                    } else null
+                    } else null,
+                    onEdgeTap = { eKey ->
+                        if (isMyTurn && state.phase == GamePhase.PLAY && !robberMode) {
+                            vm.onLocalEdgeTap(localPlayerId, eKey)
+                        }
+                    },
+                    highlightEdges = roadHighlights
                 )
             }
 
@@ -207,10 +213,10 @@ private fun hexToPixel(coord: HexCoord, hexSize: Float): Offset {
 }
 
 private fun hexCornerOffset(hexSize: Float, cornerIndex: Int): Offset {
-    // Make sure this orientation matches your existing tile drawing
-    val angleDeg = 60f * cornerIndex - 30f
+    val angleDeg = 30f - 60f * cornerIndex
     val angleRad = Math.toRadians(angleDeg.toDouble()).toFloat()
-    val cx = hexSize * cos(angleRad)
-    val cy = hexSize * sin(angleRad)
-    return Offset(cx, cy)
+    return Offset(
+        hexSize * cos(angleRad),
+        hexSize * sin(angleRad)
+    )
 }

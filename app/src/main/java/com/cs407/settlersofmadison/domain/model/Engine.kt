@@ -3,11 +3,15 @@ package com.cs407.settlersofmadison.domain.model
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+// ---------------------------------------------------------------------
+// Resources
+// ---------------------------------------------------------------------
+
 // Basic Catan-style resources for now.
-// You can rename/re-theme these later (e.g., MADISON_CHEESE, etc.)
 enum class Resource {
     WOOD,
     BRICK,
@@ -16,49 +20,86 @@ enum class Resource {
     ORE
 }
 
-// Axial hex coordinate (pointy-top)
+// ---------------------------------------------------------------------
+// Core hex types (pointy-top axial)
+// ---------------------------------------------------------------------
+
+/**
+ * Axial hex coordinate (q, r) for a **pointy-top** layout as in
+ * Red Blob Games.
+ */
 data class HexCoord(val q: Int, val r: Int)
 
-// A single hex tile on the board
+/**
+ * A single hex tile on the board.
+ */
 data class Tile(
     val coord: HexCoord,
     val resource: Resource,
     val number: Int
 )
 
-// Intersection (vertex) and edge keys, in canonical form.
-data class VertexKey(val q: Int, val r: Int, val corner: Int) // corner in 0..5
-data class EdgeKey(val q: Int, val r: Int, val edge: Int)     // edge in 0..5
+/**
+ * Intersection (vertex) and edge keys, in canonical form.
+ *
+ *  - VertexKey.corner ∈ [0, 5]
+ *  - EdgeKey.edge ∈ [0, 5]
+ *
+ * These are *canonicalized* so that a physical corner/edge shared by
+ * neighboring tiles always uses the same (q, r, corner/edge) no matter
+ * which tile you started from.
+ */
+data class VertexKey(val q: Int, val r: Int, val corner: Int)
+data class EdgeKey(val q: Int, val r: Int, val edge: Int)
 
-// Axial neighbor directions (pointy-top layout)
+// ---------------------------------------------------------------------
+// Axial neighbor directions (pointy-top) – Red Blob style
+// ---------------------------------------------------------------------
+
+/**
+ * Direction vectors for pointy-top axial coordinates.
+ *
+ * Direction indices (0..5) correspond to the 6 primary hex neighbors.
+ * This order is chosen to be consistent with using corner indices
+ * between direction i and (i+1) when computing corners.
+ */
 private val DIRS = arrayOf(
-    HexCoord(+1, 0),  // 0
-    HexCoord(+1,-1),  // 1
-    HexCoord(0,-1),   // 2
-    HexCoord(-1, 0),  // 3
-    HexCoord(-1,+1),  // 4
-    HexCoord(0,+1)    // 5
+    HexCoord(+1, 0),   // 0
+    HexCoord(+1, -1),  // 1
+    HexCoord(0, -1),   // 2
+    HexCoord(-1, 0),   // 3
+    HexCoord(-1, +1),  // 4
+    HexCoord(0, +1)    // 5
 )
 
+/**
+ * Neighbor in given direction (0..5).
+ */
 fun neighbor(c: HexCoord, dir: Int): HexCoord =
     HexCoord(c.q + DIRS[dir].q, c.r + DIRS[dir].r)
 
-/**
- * Canonicalize a vertex: the same physical corner shared by neighboring tiles
- * always maps to the same VertexKey.
- */
+// ---------------------------------------------------------------------
+// Canonical vertex + edge keys (this is where the hex logic really lives)
+// ---------------------------------------------------------------------
 
-// --- Helper for vertex canonicalization ---
+/**
+ * Helper for vertex canonicalization.
+ *
+ * For a given tile (c) and corner index, returns the **three** hex
+ * coordinates that meet at that vertex:
+ *   - the tile itself (c)
+ *   - neighbor in direction `corner`
+ *   - neighbor in direction `corner - 1` (i.e. (corner + 5) % 6)
+ *
+ * We then sort these so that the same physical vertex always yields
+ * the same triple, regardless of which tile/corner we started from.
+ */
 private fun vertexTriple(c: HexCoord, corner: Int): List<HexCoord> {
-    // The three hexes that meet at this vertex:
-    //  - the tile itself
-    //  - neighbor in direction `corner`
-    //  - neighbor in direction `corner - 1` (i.e., (corner + 5) % 6)
     val c0 = c
     val c1 = neighbor(c, corner)
     val c2 = neighbor(c, (corner + 5) % 6)
 
-    // Sort so that (A,B,C) is the same no matter which tile we start from
+    // Sort lexicographically so (A,B,C) is in a canonical order
     return listOf(c0, c1, c2).sortedWith(
         compareBy<HexCoord> { it.q }.thenBy { it.r }
     )
@@ -66,12 +107,12 @@ private fun vertexTriple(c: HexCoord, corner: Int): List<HexCoord> {
 
 /**
  * Canonical vertex id: any physical corner shared by up to 3 hexes
- * always maps to the same (q,r,corner), regardless of which tile/corner
- * we start from.
+ * always maps to the same (q, r, corner), regardless of which tile /
+ * corner we started from.
  */
 fun canonicalVertex(c: HexCoord, corner: Int): VertexKey {
     val triple = vertexTriple(c, corner)
-    val canonicalCoord = triple[0] // smallest coord (lexicographically)
+    val canonicalCoord = triple[0] // smallest (q,r)
 
     // Find which local corner on canonicalCoord yields the same triple
     val canonicalCorner = (0 until 6).first { k ->
@@ -82,7 +123,13 @@ fun canonicalVertex(c: HexCoord, corner: Int): VertexKey {
 }
 
 /**
- * Same idea for edges.
+ * Canonical edge id: any physical edge shared by two hexes always maps
+ * to the same (q, r, edge).
+ *
+ * Convention:
+ *  - For local edges 0,1,2, we treat the current hex as canonical.
+ *  - For local edges 3,4,5, we move to the neighbor and use the
+ *    "opposite" edge index (edge + 3) % 6.
  */
 fun canonicalEdge(c: HexCoord, edge: Int): EdgeKey =
     if (edge in 0..2) {
@@ -92,29 +139,110 @@ fun canonicalEdge(c: HexCoord, edge: Int): EdgeKey =
         EdgeKey(n.q, n.r, (edge + 3) % 6)
     }
 
-// Pixel helpers for rendering (not strictly needed by HexBoard, but handy)
+// ---------------------------------------------------------------------
+// Optional pixel helpers (not strictly needed by HexBoard but handy)
+// ---------------------------------------------------------------------
+
+/**
+ * Simple pixel coordinate helper used by older drawing code; for
+ * current Compose board we instead use hexToPixelBoard in HexBoard.kt.
+ */
 data class Pixel(val x: Float, val y: Float)
 
-fun axialToPixel(c: HexCoord, S: Float): Pixel {
-    val x = S * (1.5f * c.q)
-    val y = S * (sqrt(3f) * (c.r + c.q / 2f))
+/**
+ * Axial -> pixel for **pointy-top** layout (same basis as HexBoard).
+ *
+ * Basis vectors:
+ *   q: (sqrt(3), 0)
+ *   r: (sqrt(3)/2, 3/2)
+ */
+fun axialToPixel(c: HexCoord, size: Float): Pixel {
+    val x = size * (sqrt(3f) * c.q + (sqrt(3f) / 2f) * c.r)
+    val y = size * ((3f / 2f) * c.r)
     return Pixel(x, y)
 }
 
+/**
+ * Corner positions around a hex centered at (cx, cy) with radius S.
+ */
 fun hexCorners(cx: Float, cy: Float, S: Float): List<Offset> =
     (0 until 6).map { i ->
-        val ang = (60.0 * i) * (PI / 180.0)
+        val ang = (30.0 - 60.0 * i) * (PI / 180.0)
         Offset(
             (cx + S * cos(ang)).toFloat(),
             (cy + S * sin(ang)).toFloat()
         )
     }
 
+// ---------------------------------------------------------------------
+// Board layouts
+// ---------------------------------------------------------------------
+
+/**
+ * Standard radius-2 Catan-style board (19 hexes) with randomized
+ * resources + numbers. This is what GameViewModel currently uses.
+ */
+fun standardCatanBoardRandom(): List<Tile> {
+    // 1) Generate axial coords for a radius-2 hexagon (Red Blob pattern)
+    val radius = 2
+    val coords = mutableListOf<HexCoord>()
+    for (q in -radius..radius) {
+        val r1 = maxOf(-radius, -q - radius)
+        val r2 = minOf(radius, -q + radius)
+        for (r in r1..r2) {
+            coords += HexCoord(q, r)
+        }
+    }
+
+    require(coords.size == 19) { "Radius-2 hexagon should have 19 tiles, got ${coords.size}" }
+
+    // 2) Resource distribution – not strictly standard Catan, but
+    //    gives a nice mix (4 of each + 3 extra).
+    val baseResources = mutableListOf(
+        Resource.WOOD, Resource.WOOD, Resource.WOOD, Resource.WOOD,
+        Resource.BRICK, Resource.BRICK, Resource.BRICK,
+        Resource.SHEEP, Resource.SHEEP, Resource.SHEEP, Resource.SHEEP,
+        Resource.WHEAT, Resource.WHEAT, Resource.WHEAT, Resource.WHEAT,
+        Resource.ORE, Resource.ORE, Resource.ORE, Resource.ORE
+    )
+
+    // 3) Number tokens – again, roughly Catan-like but not exact.
+    //    (18 non-7 numbers + one extra to make 19)
+    val baseNumbers = mutableListOf(
+        2,
+        3, 3,
+        4, 4,
+        5, 5,
+        6, 6,
+        8, 8,
+        9, 9,
+        10, 10,
+        11, 11,
+        12,
+        5 // extra filler
+    )
+
+    baseResources.shuffle()
+    baseNumbers.shuffle()
+
+    // 4) Zip them into tiles
+    return coords.indices.map { i ->
+        Tile(
+            coord = coords[i],
+            resource = baseResources[i],
+            number = baseNumbers[i]
+        )
+    }
+}
+
 /**
  * Tiny 7-hex "demo" board:
  *
  *    [4] [0] [5]
  *      [6]
+ *    [2] [1] [3]
+ *
+ * Mostly useful for debugging hex math and vertex/edge sharing.
  */
 fun tinyBoard(): List<Tile> {
     val coords = listOf(
@@ -138,7 +266,6 @@ fun tinyBoard(): List<Tile> {
         Resource.SHEEP
     )
 
-    // Example number tokens
     val numbers = listOf(6, 8, 5, 9, 10, 4, 11)
 
     return coords.indices.map { i ->

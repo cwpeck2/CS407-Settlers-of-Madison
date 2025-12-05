@@ -12,7 +12,7 @@ import kotlin.math.abs
 
 // Overall phase – now includes ROBBER when a 7 is rolled.
 enum class GamePhase { SETUP, PLAY, ROBBER }
-
+enum class BuildType { ROAD, SETTLEMENT, CITY }
 /**
  * Per–player state.
  *
@@ -96,6 +96,46 @@ class GameViewModel : ViewModel() {
     }
 
     /**
+     * Static build cost table for each type of build action.
+     * Classic Catan costs:
+     *  - Road: WOOD + BRICK
+     *  - Settlement: WOOD + BRICK + SHEEP + WHEAT
+     *  - City: to be added when city logic is implemented
+     */
+    private val buildCosts: Map<BuildType, Map<Resource, Int>> = mapOf(
+        BuildType.ROAD to mapOf(
+            Resource.WOOD to 1,
+            Resource.BRICK to 1
+        ),
+        BuildType.SETTLEMENT to mapOf(
+            Resource.WOOD to 1,
+            Resource.BRICK to 1,
+            Resource.SHEEP to 1,
+            Resource.WHEAT to 1
+        )
+        // City cost will be added alongside city implementation.
+    )
+
+    private fun canAfford(player: PlayerState, type: BuildType): Boolean {
+        val cost = buildCosts[type] ?: return true
+        for ((res, needed) in cost) {
+            val have = player.resources[res] ?: 0
+            if (have < needed) return false
+        }
+        return true
+    }
+
+    private fun payFor(player: PlayerState, type: BuildType): PlayerState {
+        val cost = buildCosts[type] ?: return player
+        val newRes = player.resources.toMutableMap()
+        for ((res, needed) in cost) {
+            val current = newRes[res] ?: 0
+            newRes[res] = current - needed
+        }
+        return player.copy(resources = newRes)
+    }
+
+    /**
      * Vertices adjacent to v (distance 1 in the vertex graph).
      * Computed via edges in BoardGraph: any edge that contains v connects to
      * the other endpoint.
@@ -108,6 +148,14 @@ class GameViewModel : ViewModel() {
             if (b == v) res.add(a)
         }
         return res
+    }
+    private fun edgesIncidentToVertex(v: VertexKey): List<EdgeKey> {
+        return boardGraph.edges.values
+            .filter { edge ->
+                val (a, b) = edge.vertices
+                a == v || b == v
+            }
+            .map { it.key }
     }
 
     /** True if this vertex is distance-1 from any settlement (any player). */
@@ -156,11 +204,33 @@ class GameViewModel : ViewModel() {
             val players = rs.players.toMutableMap()
             val me = players[playerId] ?: return@mutate rs
 
-            val newSet = me.settlements.toMutableSet().apply { add(v) }
-            players[playerId] = me.copy(
+            // "Except initial placement": first settlement is free and can float.
+            val isInitialPlacement = me.settlements.isEmpty()
+
+            if (!isInitialPlacement) {
+                // Settlement must connect to one of *your* roads.
+                val incidentEdges = edgesIncidentToVertex(v)
+                val hasConnectingRoad = incidentEdges.any { it in me.roads }
+                if (!hasConnectingRoad) {
+                    eventText.value = "Settlement must connect to your road."
+                    return@mutate rs
+                }
+
+                if (!canAfford(me, BuildType.SETTLEMENT)) {
+                    eventText.value = "Not enough resources to build a settlement."
+                    return@mutate rs
+                }
+            }
+
+            // Pay (unless first free placement)
+            val paidPlayer = if (isInitialPlacement) me else payFor(me, BuildType.SETTLEMENT)
+
+            val newSet = paidPlayer.settlements.toMutableSet().apply { add(v) }
+            val updatedPlayer = paidPlayer.copy(
                 settlements = newSet,
                 points = newSet.size // 1 point per settlement for now
             )
+            players[playerId] = updatedPlayer
 
             // For UI: what tiles does this vertex really touch?
             val vertex = boardGraph.vertices[v]
@@ -177,7 +247,7 @@ class GameViewModel : ViewModel() {
                 }
 
             eventText.value =
-                "${me.name} placed a settlement touching: $touchingDesc"
+                "${updatedPlayer.name} placed a settlement touching: $touchingDesc"
 
             val newState = rs.copy(players = players)
 
@@ -187,7 +257,82 @@ class GameViewModel : ViewModel() {
             newState
         }
     }
+    private fun canPlaceRoad(rs: RoomState, playerId: String, e: EdgeKey): Boolean {
+        // Phase / turn
+        if (rs.phase != GamePhase.PLAY) return false
+        if (rs.turn != playerId) return false
 
+        val edge = boardGraph.edges[e] ?: return false
+
+        // Already occupied by someone?
+        if (rs.players.values.any { e in it.roads }) return false
+
+        val me = rs.players[playerId] ?: return false
+        val isFirstRoad = me.roads.isEmpty()
+
+        val (v1, v2) = edge.vertices
+
+        // Connectivity rule
+        val connects = if (isFirstRoad) {
+            // First road must touch one of *your* settlements
+            v1 in me.settlements || v2 in me.settlements
+        } else {
+            // Later roads must extend your network (roads + settlements)
+            val networkVertices = mutableSetOf<VertexKey>().apply {
+                addAll(me.settlements)
+                for (rKey in me.roads) {
+                    val rEdge = boardGraph.edges[rKey] ?: continue
+                    add(rEdge.vertices.first)
+                    add(rEdge.vertices.second)
+                }
+            }
+            v1 in networkVertices || v2 in networkVertices
+        }
+
+        if (!connects) return false
+
+        // Resource rule: first road free, others cost WOOD + BRICK
+        if (!isFirstRoad && !canAfford(me, BuildType.ROAD)) return false
+
+        return true
+    }
+    private fun tryPlaceRoad(playerId: String, e: EdgeKey) {
+        mutate { rs ->
+            // Pure legality check first (no side effects)
+            if (!canPlaceRoad(rs, playerId, e)) {
+                // Optional: you can set a generic message if you want:
+                // eventText.value = "You can't build a road there."
+                return@mutate rs
+            }
+
+            val players = rs.players.toMutableMap()
+            val me = players[playerId] ?: return@mutate rs
+            val isFirstRoad = me.roads.isEmpty()
+
+            // Pay only if this is NOT the first road
+            val paidPlayer = if (isFirstRoad) me else payFor(me, BuildType.ROAD)
+
+            val newRoads = paidPlayer.roads.toMutableSet().apply { add(e) }
+            val updated = paidPlayer.copy(roads = newRoads)
+
+            players[playerId] = updated
+            eventText.value = "${updated.name} built a road."
+
+            rs.copy(players = players)
+        }
+    }
+    fun legalRoadEdgesFor(playerId: String, room: RoomState = _state.value): Set<EdgeKey> {
+        // If it's not their turn or not PLAY phase, no highlights
+        if (room.phase != GamePhase.PLAY || room.turn != playerId) return emptySet()
+
+        val result = mutableSetOf<EdgeKey>()
+        for ((key, _) in boardGraph.edges) {
+            if (canPlaceRoad(room, playerId, key)) {
+                result.add(key)
+            }
+        }
+        return result
+    }
     /**
      * Apply a dice roll to all players, granting resources for each settlement
      * that touches a tile with this number, EXCEPT the tile that currently has
@@ -332,6 +477,16 @@ class GameViewModel : ViewModel() {
                 tryPlaceSettlement(playerId, v)
             }
 
+            "ROAD" -> {
+                if (parts.size != 5) return
+                val playerId = parts[1]
+                val q = parts[2].toIntOrNull() ?: return
+                val r = parts[3].toIntOrNull() ?: return
+                val edgeIndex = parts[4].toIntOrNull() ?: return
+                val e = EdgeKey(q, r, edgeIndex)
+                tryPlaceRoad(playerId, e)
+            }
+
             "ROLL" -> {
                 if (parts.size != 3) return
                 val playerId = parts[1]
@@ -369,7 +524,18 @@ class GameViewModel : ViewModel() {
         // …then notify peer.
         p2p.send("GAME:SETTLEMENT:$playerId:${v.q}:${v.r}:${v.corner}")
     }
-
+    fun onLocalEdgeTap(playerId: String, e: EdgeKey) {
+        // Apply locally first…
+        tryPlaceRoad(playerId, e)
+        // …then notify peer.
+        p2p.send("GAME:ROAD:$playerId:${e.q}:${e.r}:${e.edge}")
+    }
+    fun onLocalBuildRoad(playerId: String, e: EdgeKey) {
+        // Apply locally first…
+        tryPlaceRoad(playerId, e)
+        // …then notify peer.
+        p2p.send("GAME:ROAD:$playerId:${e.q}:${e.r}:${e.edge}")
+    }
     fun onLocalRollDice(playerId: String) {
         val current = _state.value
         if (current.turn != playerId || current.phase != GamePhase.PLAY) {

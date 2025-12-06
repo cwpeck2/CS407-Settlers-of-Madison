@@ -5,6 +5,7 @@ import com.cs407.settlersofmadison.data.p2p.ConnState
 import com.cs407.settlersofmadison.data.p2p.P2PHolder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlin.random.Random
 
 class LobbyViewModel : ViewModel() {
 
@@ -23,6 +24,9 @@ class LobbyViewModel : ViewModel() {
     // game started flag (host -> guest)
     val gameStarted: StateFlow<Boolean> = p2p.gameStarted
 
+    // NEW: Expose the seed from P2P
+    val gameSeed: StateFlow<Long> = p2p.gameSeed
+
     fun host(port: Int) {
         _localReady.value = false
         p2p.host(port)
@@ -39,8 +43,10 @@ class LobbyViewModel : ViewModel() {
         p2p.setReady(newReady)
     }
 
+    // CHANGED: Generate seed and start
     fun hostStartGame() {
-        p2p.sendStartGame()
+        val seed = Random.nextLong()
+        p2p.sendStartGame(seed)
     }
 
     fun send(msg: String) = p2p.send(msg)

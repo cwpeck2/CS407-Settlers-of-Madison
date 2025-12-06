@@ -63,7 +63,7 @@ fun HexBoard(
         val boardHeightPx = with(density) { maxHeight.toPx() }
 
         // Slightly smaller so everything fits on phones
-        val hexSize = min(boardWidthPx, boardHeightPx) / 8.5f
+        val hexSize = min(boardWidthPx, boardHeightPx) / 9.5f
 
         // 1) tile centers in screen space
         val tileCenters = remember(tiles, hexSize, boardWidthPx, boardHeightPx) {
@@ -565,9 +565,11 @@ private fun findNearestTile(
 
 private fun Resource.toTileColor(): Color =
     when (this) {
-        Resource.CONCRETE  -> Color(0xFF4CAF50)
-        Resource.STUDENT -> Color(0xFFB71C1C)
-        Resource.BUCKY -> Color(0xFF8BC34A)
-        Resource.CHAIR -> Color(0xFFFFEE58)
-        Resource.CHEESE_CURD   -> Color(0xFF757575)
+        Resource.CONCRETE  -> Color(0xFF8F8F8F)
+        Resource.STUDENT -> Color(0xFFA01CB7)
+        Resource.BUCKY -> Color(0xFFF60000)
+        Resource.CHAIR -> Color(0xFF0F5215)
+        Resource.CHEESE_CURD   -> Color(0xFFFFBE4F)
+        Resource.LAKE -> Color(0xFF2196F3)
     }
+

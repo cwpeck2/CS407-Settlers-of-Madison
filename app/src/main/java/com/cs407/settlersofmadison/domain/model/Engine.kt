@@ -16,7 +16,9 @@ enum class Resource {
     STUDENT,
     BUCKY,
     CHAIR,
-    CHEESE_CURD
+    CHEESE_CURD,
+
+    LAKE
 }
 
 // ---------------------------------------------------------------------

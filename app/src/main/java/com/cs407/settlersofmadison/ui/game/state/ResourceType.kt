@@ -5,5 +5,6 @@ enum class ResourceType {
     STUDENT,
     BUCKY,
     CHAIR,
-    CHEESE_CURD
+    CHEESE_CURD,
+    LAKE
 }

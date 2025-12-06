@@ -88,4 +88,5 @@ private fun ResourceType.toCardDrawable(): Int = when (this) {
     ResourceType.BUCKY       -> R.drawable.bucky_resource
     ResourceType.CHAIR       -> R.drawable.chair_resource
     ResourceType.CHEESE_CURD -> R.drawable.cheese_curd_resource
+    ResourceType.LAKE        -> 0
 }

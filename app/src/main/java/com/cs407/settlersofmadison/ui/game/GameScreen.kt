@@ -1,6 +1,8 @@
 package com.cs407.settlersofmadison.ui.game
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -12,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
@@ -24,6 +27,8 @@ import com.cs407.settlersofmadison.domain.model.Resource
 import com.cs407.settlersofmadison.game.state.ResourceCard
 import com.cs407.settlersofmadison.game.state.ResourceCount
 import com.cs407.settlersofmadison.game.state.ResourceType
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 
 // Mode inside the trade dialog: player↔player vs Flamingo Run (4:1 bank trade)
 private enum class TradeMode { PLAYER, FLAMINGO }
@@ -32,9 +37,12 @@ private enum class TradeMode { PLAYER, FLAMINGO }
 @Composable
 fun GameScreen(
     localPlayerId: String,
-    onExit: () -> Unit,
-    vm: GameViewModel = viewModel()
+    seed: Long, // CHANGED: Accept seed
+    onExit: () -> Unit
 ) {
+    // CHANGED: Use factory to pass seed to VM
+    val vm: GameViewModel = viewModel(factory = GameViewModelFactory(seed))
+
     val state by vm.state.collectAsState()
     val eventMessage by vm.eventText.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -43,7 +51,14 @@ fun GameScreen(
     var placingRoad by remember { mutableStateOf(false) }
     var placingSettlement by remember { mutableStateOf(false) }
     var showTradeDialog by remember { mutableStateOf(false) }
+    var boardScale by remember { mutableStateOf(1f) }
+    var boardOffset by remember { mutableStateOf(Offset.Zero) }
 
+    val boardTransformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val newScale = (boardScale * zoomChange).coerceIn(0.5f, 2.5f)  // tweak min/max as you like
+        boardScale = newScale
+        boardOffset += panChange
+    }
     // When turn changes, cancel any pending build / trade modes.
     LaunchedEffect(state.turn) {
         placingRoad = false
@@ -128,6 +143,15 @@ fun GameScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
+                        // Handle gestures first
+                        .transformable(boardTransformState)
+                        // Then visually scale & translate the whole board
+                        .graphicsLayer {
+                            scaleX = boardScale
+                            scaleY = boardScale
+                            translationX = boardOffset.x
+                            translationY = boardOffset.y
+                        }
                 ) {
                     val robberMode =
                         state.phase == GamePhase.ROBBER && state.turn == localPlayerId
@@ -156,8 +180,6 @@ fun GameScreen(
                             emptySet()
                         }
 
-                    // In SETUP → always show road highlights (no button).
-                    // In PLAY → only show when the corresponding build mode is active.
                     val activeEdgeHighlights =
                         if (state.phase == GamePhase.SETUP) {
                             rawRoadHighlights
@@ -355,15 +377,15 @@ fun GameScreen(
             onFlamingoTrade = { give, get ->
                 vm.onLocalFlamingoTrade(localPlayerId, give, get)
             },
-            onDismiss = { showTradeDialog = false }
+            onDismiss = { showTradeDialog = false },
+            // Use whatever drawable you want as the trade background:
+            backgroundResId = R.drawable.game_background
+            // or some custom R.drawable.trade_background if you add one
         )
     }
 }
 
-/* ------------------------------------------------------------------------- */
-/*  Resource "hand" UI                                                       */
-/* ------------------------------------------------------------------------- */
-
+// ... [Helper functions like PlayerResourceDeck, TradeDialog, etc. remain unchanged]
 @Composable
 private fun PlayerResourceDeck(
     title: String,
@@ -465,11 +487,8 @@ private fun PlayerResourceDeck(
         }
     }
 }
-
-/* ------------------------------------------------------------------------- */
-/*  Trade UI pieces                                                          */
-/* ------------------------------------------------------------------------- */
-
+// [Other helper functions omitted for brevity as they did not change] ...
+// TradeBanner, TradeDialog, BuildBar, Resource Helpers are identical to previous version.
 @Composable
 private fun TradeBanner(
     pendingTrade: TradeOffer,
@@ -544,10 +563,12 @@ private fun TradeDialog(
     localPlayer: PlayerState,
     onSendOffer: (offer: Map<Resource, Int>, request: Map<Resource, Int>) -> Unit,
     onFlamingoTrade: (give: Resource, get: Resource) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    // NEW: optional background image for the dialog
+    backgroundResId: Int? = null
 ) {
     val resCounts = localPlayer.resources
-    val allResources = Resource.values().toList()
+    val allResources = Resource.values().filter { it != Resource.LAKE }
 
     var mode by remember { mutableStateOf(TradeMode.PLAYER) }
 
@@ -590,9 +611,7 @@ private fun TradeDialog(
     val canSendPlayerTrade =
         giveAmounts.values.any { it > 0 } && getAmounts.values.any { it > 0 }
 
-    // Flamingo Run confirmation condition:
-    // - Give: at least 4 total, all from ONE resource type we have ≥4 of.
-    // - Get: exactly 1 total, from ONE resource type.
+    // Flamingo Run confirmation condition
     val flamingoGiveNonZero = giveAmounts.filterValues { it > 0 }
     val flamingoGiveTotal = flamingoGiveNonZero.values.sum()
     val flamingoGetNonZero = getAmounts.filterValues { it > 0 }
@@ -607,75 +626,125 @@ private fun TradeDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Trade") },
+        // Make the dialog card itself transparent so our Box background is visible
+        containerColor = Color.Transparent,
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                // Mode toggle row (Player vs Flamingo Run)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
+            Box(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // Optional background image for the dialog content
+                if (backgroundResId != null) {
+                    Image(
+                        painter = painterResource(id = backgroundResId),
+                        contentDescription = null,
+                        modifier = Modifier.matchParentSize(),
+                        contentScale = ContentScale.Crop,
+                        alpha = 0.45f // a little faded so text stays readable
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    FilterChip(
-                        selected = mode == TradeMode.PLAYER,
-                        onClick = { mode = TradeMode.PLAYER },
-                        label = { Text("Player") },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Default.Person,
-                                contentDescription = "Player trade"
-                            )
-                        }
+                    // Title centered
+                    Text(
+                        "Trade",
+                        style = MaterialTheme.typography.titleLarge,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
                     )
-                    FilterChip(
-                        selected = mode == TradeMode.FLAMINGO,
-                        onClick = { mode = TradeMode.FLAMINGO },
-                        label = { Text("Flamingo Run") },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Default.LocalMall,
-                                contentDescription = "Flamingo Run bank"
-                            )
-                        }
+
+                    // Mode toggle row (Player vs Flamingo Run)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilterChip(
+                            selected = mode == TradeMode.PLAYER,
+                            onClick = { mode = TradeMode.PLAYER },
+                            label = { Text("Player") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = "Player trade"
+                                )
+                            }
+                        )
+                        FilterChip(
+                            selected = mode == TradeMode.FLAMINGO,
+                            onClick = { mode = TradeMode.FLAMINGO },
+                            label = { Text("Flamingo Run") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.LocalMall,
+                                    contentDescription = "Flamingo Run bank"
+                                )
+                            }
+                        )
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    val titleText = when (mode) {
+                        TradeMode.PLAYER -> "Offer to opponent"
+                        TradeMode.FLAMINGO -> "Flamingo Run (4 : 1)"
+                    }
+                    Text(
+                        titleText,
+                        style = MaterialTheme.typography.titleSmall,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // --- YOU GIVE (centered) ---
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (mode == TradeMode.PLAYER) "You give"
+                            else "You give (4 of one type)",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+
+                    ResourceAmountRow(
+                        resources = allResources,
+                        amounts = giveAmounts,
+                        maxFor = { resCounts[it] ?: 0 },
+                        onChange = ::setGive
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // --- YOU GET (centered) ---
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (mode == TradeMode.PLAYER) "You get"
+                            else "You get (1 of any)",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+
+                    ResourceAmountRow(
+                        resources = allResources,
+                        amounts = getAmounts,
+                        maxFor = {
+                            when (mode) {
+                                TradeMode.PLAYER -> Int.MAX_VALUE
+                                TradeMode.FLAMINGO -> 1
+                            }
+                        },
+                        onChange = ::setGet
                     )
                 }
-
-                Spacer(Modifier.height(4.dp))
-
-                val titleText = when (mode) {
-                    TradeMode.PLAYER -> "Offer to opponent"
-                    TradeMode.FLAMINGO -> "Flamingo Run (4 : 1)"
-                }
-                Text(titleText, style = MaterialTheme.typography.titleSmall)
-
-                Text(
-                    if (mode == TradeMode.PLAYER) "You give" else "You give (4 of one type)",
-                    style = MaterialTheme.typography.labelLarge
-                )
-                ResourceAmountRow(
-                    resources = allResources,
-                    amounts = giveAmounts,
-                    maxFor = { resCounts[it] ?: 0 },
-                    onChange = ::setGive
-                )
-
-                Spacer(Modifier.height(8.dp))
-
-                Text(
-                    if (mode == TradeMode.PLAYER) "You get" else "You get (1 of any)",
-                    style = MaterialTheme.typography.labelLarge
-                )
-                ResourceAmountRow(
-                    resources = allResources,
-                    amounts = getAmounts,
-                    maxFor = {
-                        when (mode) {
-                            TradeMode.PLAYER -> Int.MAX_VALUE
-                            TradeMode.FLAMINGO -> 1
-                        }
-                    },
-                    onChange = ::setGet
-                )
             }
         },
         confirmButton = {
@@ -777,10 +846,6 @@ private fun ResourceAmountRow(
     }
 }
 
-/* ------------------------------------------------------------------------- */
-/*  Build bar                                                                */
-/* ------------------------------------------------------------------------- */
-
 @Composable
 private fun BuildBar(
     canBuildRoad: Boolean,
@@ -824,11 +889,6 @@ private fun BuildBar(
         }
     }
 }
-
-/* ------------------------------------------------------------------------- */
-/*  Small helpers                                                            */
-/* ------------------------------------------------------------------------- */
-
 private fun Resource.displayName(): String =
     when (this) {
         Resource.CONCRETE    -> "Concrete"
@@ -836,6 +896,7 @@ private fun Resource.displayName(): String =
         Resource.BUCKY       -> "Bucky"
         Resource.CHAIR       -> "Union Chair"
         Resource.CHEESE_CURD -> "Cheese Curds"
+        Resource.LAKE        -> "Lake"
     }
 
 private fun Resource.toResourceType(): ResourceType =
@@ -845,9 +906,9 @@ private fun Resource.toResourceType(): ResourceType =
         Resource.BUCKY       -> ResourceType.BUCKY
         Resource.CHAIR       -> ResourceType.CHAIR
         Resource.CHEESE_CURD -> ResourceType.CHEESE_CURD
+        Resource.LAKE        -> error("WATER should not be converted to ResourceType")
     }
 
-/** Turn {Concrete=2, Student=1} into "2 Concrete, 1 Student" for the banner. */
 private fun Map<Resource, Int>.describe(): String =
     entries
         .filter { it.value > 0 }

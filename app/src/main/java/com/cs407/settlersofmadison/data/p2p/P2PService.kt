@@ -44,6 +44,10 @@ class P2PService(
     private val _gameStarted = MutableStateFlow(false)
     val gameStarted: StateFlow<Boolean> = _gameStarted
 
+    // NEW: Shared seed for board generation
+    private val _gameSeed = MutableStateFlow<Long>(0L)
+    val gameSeed: StateFlow<Long> = _gameSeed
+
     // Generic incoming messages (everything that isn't READY/START_GAME/LEAVE)
     private val _incoming = MutableSharedFlow<String>()
     val incoming: SharedFlow<String> = _incoming
@@ -61,6 +65,7 @@ class P2PService(
         scope.launch(Dispatchers.Main) {
             _peerReady.value = false
             _gameStarted.value = false
+            _gameSeed.value = 0L
         }
         setState(ConnState.Hosting)
 
@@ -91,6 +96,7 @@ class P2PService(
         scope.launch(Dispatchers.Main) {
             _peerReady.value = false
             _gameStarted.value = false
+            _gameSeed.value = 0L
         }
         setState(ConnState.Connecting)
 
@@ -123,8 +129,12 @@ class P2PService(
                         append("RX: $line")
 
                         when {
-                            line == "START_GAME" -> {
+                            // CHANGED: Parse Seed from START_GAME message
+                            line.startsWith("START_GAME") -> {
+                                val parts = line.split(":")
+                                val seed = if (parts.size > 1) parts[1].toLongOrNull() ?: 0L else 0L
                                 scope.launch(Dispatchers.Main) {
+                                    _gameSeed.value = seed
                                     _gameStarted.value = true
                                 }
                             }
@@ -178,12 +188,14 @@ class P2PService(
         send(if (ready) "READY:1" else "READY:0")
     }
 
-    // Host tells guest "go to game now"
-    fun sendStartGame() {
-        send("START_GAME")
-        scope.launch(Dispatchers.Main) {
-            _gameStarted.value = true
-        }
+    // CHANGED: Host sends seed to guest
+    fun sendStartGame(seed: Long) {
+        // First update local flows so LobbyViewModel sees the correct seed immediately
+        _gameSeed.value = seed
+        _gameStarted.value = true
+
+        // Then send to the peer (still async inside send())
+        send("START_GAME:$seed")
     }
 
     fun leave() {

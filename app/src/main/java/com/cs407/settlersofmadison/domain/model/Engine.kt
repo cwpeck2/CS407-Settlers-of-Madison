@@ -3,7 +3,6 @@ package com.cs407.settlersofmadison.domain.model
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.PI
 import kotlin.math.cos
-import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -13,11 +12,11 @@ import kotlin.math.sqrt
 
 // Basic Catan-style resources for now.
 enum class Resource {
-    WOOD,
-    BRICK,
-    SHEEP,
-    WHEAT,
-    ORE
+    CONCRETE,
+    STUDENT,
+    BUCKY,
+    CHAIR,
+    CHEESE_CURD
 }
 
 // ---------------------------------------------------------------------
@@ -199,11 +198,11 @@ fun standardCatanBoardRandom(): List<Tile> {
     // 2) Resource distribution – not strictly standard Catan, but
     //    gives a nice mix (4 of each + 3 extra).
     val baseResources = mutableListOf(
-        Resource.WOOD, Resource.WOOD, Resource.WOOD, Resource.WOOD,
-        Resource.BRICK, Resource.BRICK, Resource.BRICK,
-        Resource.SHEEP, Resource.SHEEP, Resource.SHEEP, Resource.SHEEP,
-        Resource.WHEAT, Resource.WHEAT, Resource.WHEAT, Resource.WHEAT,
-        Resource.ORE, Resource.ORE, Resource.ORE, Resource.ORE
+        Resource.CONCRETE, Resource.CONCRETE, Resource.CONCRETE, Resource.CONCRETE,
+        Resource.STUDENT, Resource.STUDENT, Resource.STUDENT,
+        Resource.BUCKY, Resource.BUCKY, Resource.BUCKY, Resource.BUCKY,
+        Resource.CHAIR, Resource.CHAIR, Resource.CHAIR, Resource.CHAIR,
+        Resource.CHEESE_CURD, Resource.CHEESE_CURD, Resource.CHEESE_CURD, Resource.CHEESE_CURD
     )
 
     // 3) Number tokens – again, roughly Catan-like but not exact.
@@ -257,13 +256,13 @@ fun tinyBoard(): List<Tile> {
 
     // Very rough resource layout, just to have something to demo.
     val resources = listOf(
-        Resource.WHEAT,
-        Resource.WOOD,
-        Resource.BRICK,
-        Resource.SHEEP,
-        Resource.ORE,
-        Resource.WOOD,
-        Resource.SHEEP
+        Resource.CHAIR,
+        Resource.CONCRETE,
+        Resource.STUDENT,
+        Resource.BUCKY,
+        Resource.CHEESE_CURD,
+        Resource.CONCRETE,
+        Resource.BUCKY
     )
 
     val numbers = listOf(6, 8, 5, 9, 10, 4, 11)

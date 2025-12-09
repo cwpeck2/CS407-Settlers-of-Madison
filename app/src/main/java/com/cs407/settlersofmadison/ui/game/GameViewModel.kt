@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 // Overall phase – now includes SETUP and ROBBER.
@@ -47,19 +49,93 @@ data class RoomState(
     val setupPlacedSettlement: Boolean = false,
     val setupPlacedRoad: Boolean = false,
     val setupCurrentSettlementVertex: VertexKey? = null,
+    val portVertices: Set<VertexKey> = emptySet(),
 )
 
 // CHANGED: Accept seed in constructor
 class GameViewModel(private val seed: Long) : ViewModel() {
 
+    private val HEX_DIRECTIONS = listOf(
+        HexCoord(1, 0),
+        HexCoord(1, -1),
+        HexCoord(0, -1),
+        HexCoord(-1, 0),
+        HexCoord(-1, 1),
+        HexCoord(0, 1)
+    )
+
     private val p2p = P2PHolder.service
 
     // CHANGED: Use seeded random for board generation
-    private val boardTiles: List<Tile> = standardCatanBoardRandom(seed)
+    private val boardTiles: List<Tile> = generateBoard(seed)
 
     private val boardGraph: BoardGraph = buildBoardGraph(boardTiles)
 
-    // CHANGED: Use seeded random for starting player
+    // Ports computed from the lake shoreline
+    private val portVerticesOnBoard: Set<VertexKey> = computeLakePorts(boardGraph)
+    private val portResourcesInternal: Map<VertexKey, Resource> =
+        assignPortResources(portVerticesOnBoard)
+    private val portResourceMap: Map<VertexKey, Resource> = run {
+        val ports = portVerticesOnBoard.toList()
+        if (ports.isEmpty()) {
+            emptyMap()
+        } else {
+            // One of each resource, shuffled
+            val resources = listOf(
+                Resource.CONCRETE,
+                Resource.STUDENT,
+                Resource.BUCKY,
+                Resource.CHAIR,
+                Resource.CHEESE_CURD
+            ).shuffled(Random(seed))
+
+            val count = minOf(ports.size, resources.size)
+            (0 until count).associate { i ->
+                ports[i] to resources[i]
+            }
+        }
+    }
+    private fun bankRateFor(player: PlayerState, res: Resource): Int {
+        // Player gets 3:1 ONLY if they have a settlement on a port
+        // whose resource matches `res`.
+        val hasSpecificPort = player.settlements.any { vKey ->
+            portResourcesInternal[vKey] == res
+        }
+        return if (hasSpecificPort) 3 else 4    // resource-specific, not global
+    }
+
+    // Convenience wrapper for UI
+    fun bankRateFor(playerId: String, res: Resource): Int {
+        val rs = _state.value
+        val player = rs.players[playerId] ?: return 4
+        return bankRateFor(player, res)
+    }
+    private fun assignPortResources(portVertices: Set<VertexKey>): Map<VertexKey, Resource> {
+        if (portVertices.isEmpty()) return emptyMap()
+
+        // The five tradable resources (no lake)
+        val resources = listOf(
+            Resource.CONCRETE,
+            Resource.STUDENT,
+            Resource.BUCKY,
+            Resource.CHAIR,
+            Resource.CHEESE_CURD
+        )
+
+        val rng = Random(seed + 1)   // deterministic but separate from boardTiles RNG
+        val portsShuffled = portVertices.toList().shuffled(rng)
+
+        val result = mutableMapOf<VertexKey, Resource>()
+        for (i in portsShuffled.indices) {
+            val res = resources[i % resources.size]  // if more than 5 ports, wrap
+            result[portsShuffled[i]] = res
+        }
+        return result
+    }
+    // Exposed to UI for drawing
+    val portResources: Map<VertexKey, Resource>
+        get() = portResourcesInternal
+    // Starting player still random off the seed
     private val startingPlayerId: String =
         if (Random(seed).nextBoolean()) "host" else "guest"
 
@@ -78,7 +154,8 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             setupPlacedRoad = false,
             setupCurrentSettlementVertex = null,
             hasRolledThisTurn = false,
-            pendingTrade = null
+            pendingTrade = null,
+            portVertices = portVerticesOnBoard
         )
     )
     val state: StateFlow<RoomState> = _state
@@ -96,6 +173,17 @@ class GameViewModel(private val seed: Long) : ViewModel() {
     }
     init {
         Log.d("GameVM", "Creating GameViewModel with seed=$seed, role board=${startingPlayerId}")
+    }
+
+    private fun ringOf(coord: HexCoord): Int {
+        val q = coord.q
+        val r = coord.r
+        val s = -q - r
+        return maxOf(abs(q), abs(r), abs(s))
+    }
+    private fun playerHasPort(player: PlayerState, rs: RoomState): Boolean {
+        if (rs.portVertices.isEmpty()) return false
+        return player.settlements.any { it in rs.portVertices }
     }
     private fun mutate(block: (RoomState) -> RoomState) {
         _state.value = block(_state.value)
@@ -376,38 +464,87 @@ class GameViewModel(private val seed: Long) : ViewModel() {
     private fun applyRollResult(roll: Int) {
         mutate { rs ->
             if (rs.phase != GamePhase.PLAY) return@mutate rs
+
             val players = rs.players.toMutableMap()
             val gainsByPlayerName = mutableMapOf<String, MutableList<Resource>>()
             val robbedCoord = rs.robberCoord
+
+            fun addGain(player: PlayerState, resource: Resource, newRes: MutableMap<Resource, Int>) {
+                newRes[resource] = (newRes[resource] ?: 0) + 1
+                gainsByPlayerName
+                    .getOrPut(player.name) { mutableListOf() }
+                    .add(resource)
+            }
+
             for ((id, player) in players) {
                 var gained = 0
                 val newRes = player.resources.toMutableMap()
+
+                // For each settlement the player has...
                 for (v in player.settlements) {
                     val vertex = boardGraph.vertices[v] ?: continue
+
+                    // ...and for each tile touching that vertex...
                     for (coord in vertex.tileCoords) {
                         val tile = boardGraph.tilesByCoord[coord] ?: continue
+
+                        // Robber blocks the entire tile (base + landmark bonus)
                         if (robbedCoord != null && tile.coord == robbedCoord) continue
 
-                        // Only numbered, non-water tiles pay out
+                        // Only numbered, non-lake tiles pay out
                         if (tile.number == roll && tile.resource != Resource.LAKE) {
-                            newRes[tile.resource] = (newRes[tile.resource] ?: 0) + 1
+                            // Base resource from the tile
+                            addGain(player, tile.resource, newRes)
                             gained++
-                            gainsByPlayerName
-                                .getOrPut(player.name) { mutableListOf() }
-                                .add(tile.resource)
+
+                            // Landmark bonus on that tile, if any
+                            when (tile.landmark) {
+                                Landmark.BASCOM_HILL -> {
+                                    addGain(player, Resource.STUDENT, newRes)
+                                    gained++
+                                }
+                                Landmark.CAPITOL -> {
+                                    addGain(player, Resource.CONCRETE, newRes)
+                                    gained++
+                                }
+                                Landmark.MEMORIAL_UNION -> {
+                                    addGain(player, Resource.CHEESE_CURD, newRes)
+                                    gained++
+                                }
+                                Landmark.ENGINEERING_HALL -> {
+                                    addGain(player, Resource.BUCKY, newRes)
+                                    gained++
+                                }
+                                null -> Unit
+                            }
                         }
                     }
                 }
-                if (gained > 0) players[id] = player.copy(resources = newRes)
-            }
-            val msg = if (gainsByPlayerName.isEmpty()) "Rolled $roll. No resources." else
-                "Rolled $roll → " + gainsByPlayerName.entries.joinToString(" | ") { (name, list) ->
-                    val summary = list.groupingBy { it }.eachCount().entries.joinToString { (res, count) ->
-                        val prettyName = res.name.lowercase().replaceFirstChar { it.uppercaseChar() }
-                        "$count $prettyName"
-                    }
-                    "$name: $summary"
+
+                if (gained > 0) {
+                    players[id] = player.copy(resources = newRes)
                 }
+            }
+
+            val msg =
+                if (gainsByPlayerName.isEmpty()) {
+                    "Rolled $roll. No resources."
+                } else {
+                    "Rolled $roll → " +
+                            gainsByPlayerName.entries.joinToString(" | ") { (name, list) ->
+                                val summary = list
+                                    .groupingBy { it }
+                                    .eachCount()
+                                    .entries
+                                    .joinToString { (res, count) ->
+                                        val prettyName =
+                                            res.name.lowercase().replaceFirstChar { it.uppercaseChar() }
+                                        "$count $prettyName"
+                                    }
+                                "$name: $summary"
+                            }
+                }
+
             eventText.value = msg
             rs.copy(players = players, lastRoll = roll, hasRolledThisTurn = true)
         }
@@ -480,13 +617,17 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         mutate { rs ->
             val players = rs.players.toMutableMap()
             val me = players[playerId] ?: return@mutate rs
+
+            val rate = bankRateFor(me, give)  // 3 or 4 depending on ports
             val have = me.resources[give] ?: 0
-            if (have < 4) return@mutate rs
+            if (have < rate) return@mutate rs
+
             val newRes = me.resources.toMutableMap()
-            newRes[give] = have - 4
+            newRes[give] = have - rate
             newRes[get] = (newRes[get] ?: 0) + 1
+
             players[playerId] = me.copy(resources = newRes)
-            eventText.value = "Flamingo Run trade complete."
+            eventText.value = "Flamingo Run trade complete (${rate}:1 ${give.name.lowercase()})."
             rs.copy(players = players)
         }
     }
@@ -647,34 +788,306 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         }
     }
     fun debugDumpEverything() { /* ... unchanged ... */ }
+
     private val MAX_TERRAIN_CLUSTER = 3
+
     // CHANGED: Use the seed for deterministic board generation
-    private fun standardCatanBoardRandom(seed: Long): List<Tile> {
+    private fun generateBoard(seed: Long): List<Tile> {
         val rng = Random(seed)
 
-        // 1) Radius-3 hex coordinates (37 tiles)
-        val coords = hexCoords(radius = 3)
-            .sortedWith(compareBy<HexCoord> { it.q }.thenBy { it.r })
+        // --- All axial coords for radius 3 ---
+        val allCoords = mutableListOf<HexCoord>()
+        val radius = 3
+        for (q in -radius..radius) {
+            for (r in -radius..radius) {
+                val s = -q - r
+                if (maxOf(abs(q), abs(r), abs(s)) <= radius) {
+                    allCoords.add(HexCoord(q, r))
+                }
+            }
+        }
+        val allCoordSet = allCoords.toSet()
 
-        val neighbors = buildNeighborMap(coords)
+        val innerCoords = allCoords.filter { ringOf(it) <= 2 }  // radius <= 2
+        val outerCoords = allCoords.filter { ringOf(it) == 3 }  // rim
 
-        // 2) Place terrain (resources + 1 water)
-        val resourceLayout = generateResourceLayout(coords, neighbors, rng)
+        // --- Landmarks: spread around the outer rim (bonus tiles on the edge) ---
+        // Use all Landmark enum values so if you add more, they automatically get placed.
+        val landmarkTypes = Landmark.values().toList()
+        val landmarkByCoord = mutableMapOf<HexCoord, Landmark>()
 
-        // 3) Place numbers with adjacency constraints
-        val numberLayout = generateNumberLayout(coords, neighbors, resourceLayout, rng)
+        if (landmarkTypes.isNotEmpty() && outerCoords.isNotEmpty()) {
+            // Axial -> 2D for angle ordering; exact scale doesn’t matter.
+            fun axialToCartesian(c: HexCoord): Pair<Double, Double> {
+                val x = c.q.toDouble() + 0.5 * c.r.toDouble()
+                val y = (sqrt(3.0) / 2.0) * c.r.toDouble()
+                return x to y
+            }
 
-        // 4) Build final tiles (water gets number 0, which never triggers)
-        return coords.map { coord ->
-            val res = resourceLayout[coord]!!
-            val num = numberLayout[coord] ?: 0
-            Tile(
+            val outerOrderedByAngle = outerCoords.sortedBy { coord ->
+                val (x, y) = axialToCartesian(coord)
+                atan2(y, x)
+            }
+
+            // Rotate so that the top-center tile (0, -radius) is first, if it exists.
+            val topCoord = HexCoord(0, -radius)
+            val startIndex = outerOrderedByAngle.indexOf(topCoord)
+            val ringOrdered = if (startIndex >= 0) {
+                outerOrderedByAngle.drop(startIndex) + outerOrderedByAngle.take(startIndex)
+            } else {
+                outerOrderedByAngle
+            }
+
+            val count = minOf(landmarkTypes.size, ringOrdered.size)
+            val step = ringOrdered.size.toDouble() / count.toDouble()
+            val usedIndices = mutableSetOf<Int>()
+            val shuffledLandmarks = landmarkTypes.shuffled(rng)
+
+            var pos = 0.0
+            for (i in 0 until count) {
+                var idx = pos.toInt().coerceIn(0, ringOrdered.lastIndex)
+                // Ensure we don't reuse the same coord.
+                while (idx in usedIndices) {
+                    idx = (idx + 1) % ringOrdered.size
+                }
+                usedIndices += idx
+                val coord = ringOrdered[idx]
+                val lm = shuffledLandmarks[i]
+                landmarkByCoord[coord] = lm
+                pos += step
+            }
+        }
+
+        // --- Lakes: big (4) + small (3) inside inner region ---
+        val innerAvailable = innerCoords.toMutableSet()
+
+        fun growLake(startFrom: HexCoord, targetSize: Int, available: MutableSet<HexCoord>): Set<HexCoord> {
+            val cluster = mutableSetOf<HexCoord>()
+            val frontier = ArrayDeque<HexCoord>()
+            frontier.add(startFrom)
+
+            while (cluster.size < targetSize && frontier.isNotEmpty()) {
+                val current = frontier.removeFirst()
+                if (!available.contains(current)) continue
+
+                cluster.add(current)
+                available.remove(current)
+
+                // neighbors that are still in innerAvailable
+                for (dir in HEX_DIRECTIONS) {
+                    val n = HexCoord(current.q + dir.q, current.r + dir.r)
+                    if (available.contains(n)) {
+                        frontier.addLast(n)
+                    }
+                }
+            }
+            return cluster
+        }
+
+        fun pickStart(avoid: Set<HexCoord>): HexCoord {
+            val candidates = innerAvailable.filter { it !in avoid }
+            val pool = if (candidates.isNotEmpty()) candidates else innerAvailable.toList()
+            return pool.random(rng)
+        }
+
+        // Big lake (4 tiles)
+        val bigLakeStart = pickStart(emptySet())
+        val bigLake = growLake(bigLakeStart, 4, innerAvailable)
+
+        // Keep the small lake a bit away from the big one
+        val excludedForSmall = buildSet {
+            addAll(bigLake)
+            for (c in bigLake) {
+                for (d in HEX_DIRECTIONS) {
+                    add(HexCoord(c.q + d.q, c.r + d.r))
+                }
+            }
+        }
+
+        val smallLakeStart = pickStart(excludedForSmall)
+        val smallLake = growLake(smallLakeStart, 3, innerAvailable)
+
+        val lakeCoords = (bigLake + smallLake).toSet()
+
+        // --- Land coords (non-lake) ---
+        val landCoords = allCoords.filter { it !in lakeCoords }
+        // For radius 3: 37 total - 7 water = 30 land
+
+        // --- Resource bag for land tiles (5 resources × 6 = 30) ---
+        val resourceBag = mutableListOf<Resource>().apply {
+            repeat(6) { add(Resource.CONCRETE) }
+            repeat(6) { add(Resource.STUDENT) }
+            repeat(6) { add(Resource.BUCKY) }
+            repeat(6) { add(Resource.CHAIR) }
+            repeat(6) { add(Resource.CHEESE_CURD) }
+        }.shuffled(rng)
+
+        // --- Neighbors for adjacency constraints ---
+        val neighborsByCoord = allCoords.associateWith { coord ->
+            HEX_DIRECTIONS
+                .map { d -> HexCoord(coord.q + d.q, coord.r + d.r) }
+                .filter { allCoordSet.contains(it) }
+        }
+
+        // --- First, assign resources (including lakes), numbers later ---
+        val tilesByCoord = mutableMapOf<HexCoord, Tile>()
+
+        // Lakes = water tiles with no number token
+        for (coord in lakeCoords) {
+            tilesByCoord[coord] = Tile(
                 coord = coord,
-                resource = res,
-                number = num
+                resource = Resource.LAKE,
+                number = 0,
+                landmark = null
             )
         }
+
+        // Land resources + landmarks (bonus tiles)
+        landCoords.shuffled(rng).forEachIndexed { index, coord ->
+            val res = resourceBag.getOrNull(index) ?: Resource.CONCRETE
+            val lm = landmarkByCoord[coord]
+            tilesByCoord[coord] = Tile(
+                coord = coord,
+                resource = res,
+                number = -1,
+                landmark = lm
+            )
+        }
+
+        // --- Number bag for 30 land tiles ---
+        val numberBag = mutableListOf<Int>().apply {
+            add(2); add(12)
+            repeat(3) { add(3); add(11) }
+            repeat(4) { add(4); add(10) }
+            repeat(5) { add(5); add(9) }
+            repeat(2) { add(6); add(8) }
+        }.shuffled(rng)
+
+        val landCoordsList = landCoords.toList()
+        var chosenNumbers: Map<HexCoord, Int>? = null
+
+        attempt@ for (attempt in 0 until 2000) {
+            val candidate = mutableMapOf<HexCoord, Int>()
+            val shuffledNumbers = numberBag.shuffled(rng)
+
+            for (i in landCoordsList.indices) {
+                val coord = landCoordsList[i]
+                val n = shuffledNumbers[i]
+
+                // Landmarks cannot be 6 or 8
+                val lm = landmarkByCoord[coord]
+                if (lm != null && (n == 6 || n == 8)) {
+                    continue@attempt
+                }
+
+                // Adjacency constraints:
+                // - same number can't touch
+                // - 6/8 can't touch 6/8
+                // - 2 and 12 can't touch each other
+                val neighbors = neighborsByCoord[coord].orEmpty()
+                for (nb in neighbors) {
+                    val prev = candidate[nb] ?: continue
+                    if (prev == n) continue@attempt
+                    if ((n == 6 || n == 8) && (prev == 6 || prev == 8)) continue@attempt
+                    if ((n == 2 && prev == 12) || (n == 12 && prev == 2)) continue@attempt
+                }
+
+                candidate[coord] = n
+            }
+
+            if (candidate.size == landCoordsList.size) {
+                chosenNumbers = candidate
+                break
+            }
+        }
+
+        val finalNumbers = chosenNumbers ?: run {
+            // Fallback: just assign numbers in order, only enforcing
+            // "no 6/8 on landmark" to avoid hard-breaking landmarks.
+            val map = mutableMapOf<HexCoord, Int>()
+            val it = numberBag.iterator()
+            for (coord in landCoordsList) {
+                var n = if (it.hasNext()) it.next() else 5
+                val lm = landmarkByCoord[coord]
+                if (lm != null && (n == 6 || n == 8)) {
+                    n = numberBag.firstOrNull { x -> x != 6 && x != 8 } ?: 5
+                }
+                map[coord] = n
+            }
+            map
+        }
+
+        // --- Build final tile list in stable order ---
+        return allCoords
+            .sortedWith(compareBy<HexCoord> { it.q }.thenBy { it.r })
+            .map { coord ->
+                val base = tilesByCoord[coord]
+                    ?: Tile(coord, Resource.CONCRETE, number = 0, landmark = null)
+
+                if (base.resource == Resource.LAKE) {
+                    base.copy(number = 0)   // lakes never get a token
+                } else {
+                    base.copy(number = finalNumbers[coord] ?: base.number)
+                }
+            }
     }
+
+    private fun computeLakePorts(graph: BoardGraph): Set<VertexKey> {
+        // Water tiles = lakes
+        val waterCoords = graph.tiles
+            .filter { it.resource == Resource.LAKE }
+            .map { it.coord }
+            .toSet()
+
+        if (waterCoords.isEmpty()) return emptySet()
+
+        data class Candidate(val vertexKey: VertexKey, val landCoord: HexCoord)
+
+        val candidates = mutableListOf<Candidate>()
+
+        // Shore vertices = vertices touching at least one lake + at least one land tile
+        for ((vKey, vertex) in graph.vertices) {
+            val touching = vertex.tileCoords
+            val touchesWater = touching.any { it in waterCoords }
+            if (!touchesWater) continue
+
+            val land = touching.firstOrNull { it !in waterCoords } ?: continue
+            candidates.add(Candidate(vKey, land))
+        }
+
+        if (candidates.isEmpty()) return emptySet()
+
+        fun hexDistance(a: HexCoord, b: HexCoord): Int {
+            val aq = a.q; val ar = a.r; val asCoord = -aq - ar
+            val bq = b.q; val br = b.r; val bs = -bq - br
+            return maxOf(
+                abs(aq - bq),
+                abs(ar - br),
+                abs(asCoord - bs)
+            )
+        }
+
+        val rng = Random(seed)
+        val shuffled = candidates.shuffled(rng)
+        val chosen = mutableListOf<Candidate>()
+
+        // "No port within two hexes" -> require distance >= 3 between their land anchor tiles
+        for (cand in shuffled) {
+            if (chosen.any { hexDistance(it.landCoord, cand.landCoord) < 3 }) {
+                continue
+            }
+            chosen.add(cand)
+        }
+
+        // Safety net: in pathological layouts, still guarantee at least one port
+        if (chosen.isEmpty()) {
+            chosen.add(shuffled.first())
+        }
+
+        return chosen.mapTo(mutableSetOf()) { it.vertexKey }
+    }
+
+    // --- UNUSED helpers kept for reference (unchanged) ---
 
     // Build axial hex coordinates for a hex of given radius
     private fun hexCoords(radius: Int): List<HexCoord> {
@@ -800,11 +1213,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         return true
     }
 
-    // Number layout:
-    // - No same-number neighbors
-    // - No 6 touching 8
-    // - No 2 touching 12
-    // WATER tiles get number 0 (ignored in checks and payouts).
+    // Number layout (unused in the current path).
     private fun generateNumberLayout(
         coords: List<HexCoord>,
         neighbors: Map<HexCoord, List<HexCoord>>,

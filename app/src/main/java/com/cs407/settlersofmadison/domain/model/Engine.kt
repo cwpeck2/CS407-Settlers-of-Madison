@@ -37,7 +37,8 @@ data class HexCoord(val q: Int, val r: Int)
 data class Tile(
     val coord: HexCoord,
     val resource: Resource,
-    val number: Int
+    val number: Int,
+    val landmark: Landmark? = null
 )
 
 /**

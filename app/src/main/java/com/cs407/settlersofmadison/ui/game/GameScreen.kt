@@ -1,15 +1,22 @@
 package com.cs407.settlersofmadison.ui.game
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalMall
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,6 +36,9 @@ import com.cs407.settlersofmadison.game.state.ResourceCount
 import com.cs407.settlersofmadison.game.state.ResourceType
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 
 // Mode inside the trade dialog: player↔player vs Flamingo Run (4:1 bank trade)
 private enum class TradeMode { PLAYER, FLAMINGO }
@@ -118,238 +128,224 @@ fun GameScreen(
                 alpha = 0.85f
             )
 
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            // Foreground layer: board + UI + floating buttons
+            Box(
+                modifier = Modifier.fillMaxSize()
             ) {
-                // --- Header: whose turn / last roll ---
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val currentPlayer = state.players[state.turn]
-                    Text(
-                        "Turn: ${currentPlayer?.name ?: state.turn}",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text("Last roll: ${state.lastRoll ?: "--"}")
-                }
+                    // --- Header: whose turn / last roll ---
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val currentPlayer = state.players[state.turn]
+                        Text(
+                            "Turn: ${currentPlayer?.name ?: state.turn}",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text("Last roll: ${state.lastRoll ?: "--"}")
+                    }
 
-                // --- Board ---
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        // Handle gestures first
-                        .transformable(boardTransformState)
-                        // Then visually scale & translate the whole board
-                        .graphicsLayer {
-                            scaleX = boardScale
-                            scaleY = boardScale
-                            translationX = boardOffset.x
-                            translationY = boardOffset.y
-                        }
-                ) {
-                    val robberMode =
-                        state.phase == GamePhase.ROBBER && state.turn == localPlayerId
-
-                    val rawRoadHighlights =
-                        if (
-                            isMyTurn &&
-                            !robberMode &&
-                            (state.phase == GamePhase.PLAY || state.phase == GamePhase.SETUP) &&
-                            !hasBlockingTrade
-                        ) {
-                            vm.legalRoadEdgesFor(localPlayerId, state)
-                        } else {
-                            emptySet()
-                        }
-
-                    val rawSettlementHighlights =
-                        if (
-                            isMyTurn &&
-                            !robberMode &&
-                            state.phase == GamePhase.PLAY &&
-                            !hasBlockingTrade
-                        ) {
-                            vm.legalSettlementVerticesFor(localPlayerId, state)
-                        } else {
-                            emptySet()
-                        }
-
-                    val activeEdgeHighlights =
-                        if (state.phase == GamePhase.SETUP) {
-                            rawRoadHighlights
-                        } else if (placingRoad) {
-                            rawRoadHighlights
-                        } else {
-                            emptySet()
-                        }
-
-                    val activeVertexHighlights =
-                        if (state.phase == GamePhase.PLAY && placingSettlement) {
-                            rawSettlementHighlights
-                        } else {
-                            emptySet()
-                        }
-
-                    HexBoard(
-                        roomState = state,
-                        currentPlayerId = state.turn,
-                        robberMode = robberMode,
-                        robberCoord = state.robberCoord,
-                        onVertexTap = { vKey ->
-                            if (hasBlockingTrade) return@HexBoard
-                            if (!robberMode) {
-                                when (state.phase) {
-                                    GamePhase.SETUP -> {
-                                        if (isMyTurn) {
-                                            vm.onLocalVertexTap(localPlayerId, vKey)
-                                        }
-                                    }
-
-                                    GamePhase.PLAY -> {
-                                        if (
-                                            isMyTurn &&
-                                            placingSettlement &&
-                                            vKey in activeVertexHighlights
-                                        ) {
-                                            vm.onLocalVertexTap(localPlayerId, vKey)
-                                            placingSettlement = false
-                                        }
-                                    }
-
-                                    GamePhase.ROBBER -> Unit
-                                }
+                    // --- Board ---
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            // Handle gestures first
+                            .transformable(boardTransformState)
+                            // Then visually scale & translate the whole board
+                            .graphicsLayer {
+                                scaleX = boardScale
+                                scaleY = boardScale
+                                translationX = boardOffset.x
+                                translationY = boardOffset.y
                             }
-                        },
-                        onTileTap = if (robberMode) { coord ->
-                            vm.onLocalPlaceRobber(localPlayerId, coord)
-                        } else null,
-                        onEdgeTap = { eKey ->
-                            if (hasBlockingTrade) return@HexBoard
+                    ) {
+                        val robberMode =
+                            state.phase == GamePhase.ROBBER && state.turn == localPlayerId
+
+                        val rawRoadHighlights =
                             if (
                                 isMyTurn &&
                                 !robberMode &&
-                                eKey in activeEdgeHighlights &&
-                                (
-                                        (state.phase == GamePhase.PLAY && placingRoad) ||
-                                                state.phase == GamePhase.SETUP
-                                        )
+                                (state.phase == GamePhase.PLAY || state.phase == GamePhase.SETUP) &&
+                                !hasBlockingTrade
                             ) {
-                                vm.onLocalEdgeTap(localPlayerId, eKey)
-                                if (state.phase == GamePhase.PLAY) {
-                                    placingRoad = false
-                                }
+                                vm.legalRoadEdgesFor(localPlayerId, state)
+                            } else {
+                                emptySet()
                             }
-                        },
-                        highlightEdges = activeEdgeHighlights,
-                        highlightVertices = activeVertexHighlights
-                    )
-                }
 
-                // --- Actions (only meaningful in PLAY) ---
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    Button(
-                        onClick = { vm.onLocalRollDice(localPlayerId) },
-                        enabled = isMyTurn &&
-                                state.phase == GamePhase.PLAY &&
-                                !state.hasRolledThisTurn &&
-                                !hasBlockingTrade
-                    ) { Text("Roll Dice") }
-
-                    Button(
-                        onClick = { vm.onLocalEndTurn(localPlayerId) },
-                        enabled = isMyTurn &&
+                        val rawSettlementHighlights =
+                            if (
+                                isMyTurn &&
+                                !robberMode &&
                                 state.phase == GamePhase.PLAY &&
                                 !hasBlockingTrade
-                    ) { Text("End Turn") }
+                            ) {
+                                vm.legalSettlementVerticesFor(localPlayerId, state)
+                            } else {
+                                emptySet()
+                            }
 
-                    Button(
-                        onClick = { showTradeDialog = true },
-                        enabled = vm.canStartTrade(localPlayerId, state)
-                    ) { Text("Trade") }
-                }
+                        val activeEdgeHighlights =
+                            if (state.phase == GamePhase.SETUP) {
+                                rawRoadHighlights
+                            } else if (placingRoad) {
+                                rawRoadHighlights
+                            } else {
+                                emptySet()
+                            }
 
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    TextButton(onClick = { vm.debugDumpEverything() }) {
-                        Text("Dump Board")
+                        val activeVertexHighlights =
+                            if (state.phase == GamePhase.PLAY && placingSettlement) {
+                                rawSettlementHighlights
+                            } else {
+                                emptySet()
+                            }
+
+                        HexBoard(
+                            roomState = state,
+                            currentPlayerId = state.turn,
+                            robberMode = robberMode,
+                            robberCoord = state.robberCoord,
+                            onVertexTap = { vKey ->
+                                if (hasBlockingTrade) return@HexBoard
+                                if (!robberMode) {
+                                    when (state.phase) {
+                                        GamePhase.SETUP -> {
+                                            if (isMyTurn) {
+                                                vm.onLocalVertexTap(localPlayerId, vKey)
+                                            }
+                                        }
+
+                                        GamePhase.PLAY -> {
+                                            if (
+                                                isMyTurn &&
+                                                placingSettlement &&
+                                                vKey in activeVertexHighlights
+                                            ) {
+                                                vm.onLocalVertexTap(localPlayerId, vKey)
+                                                placingSettlement = false
+                                            }
+                                        }
+
+                                        GamePhase.ROBBER -> Unit
+                                    }
+                                }
+                            },
+                            onTileTap = if (robberMode) { coord ->
+                                vm.onLocalPlaceRobber(localPlayerId, coord)
+                            } else null,
+                            onEdgeTap = { eKey ->
+                                if (hasBlockingTrade) return@HexBoard
+                                if (
+                                    isMyTurn &&
+                                    !robberMode &&
+                                    eKey in activeEdgeHighlights &&
+                                    (
+                                            (state.phase == GamePhase.PLAY && placingRoad) ||
+                                                    state.phase == GamePhase.SETUP
+                                            )
+                                ) {
+                                    vm.onLocalEdgeTap(localPlayerId, eKey)
+                                    if (state.phase == GamePhase.PLAY) {
+                                        placingRoad = false
+                                    }
+                                }
+                            },
+                            highlightEdges = activeEdgeHighlights,
+                            highlightVertices = activeVertexHighlights,
+                            portResources = vm.portResources
+                        )
                     }
-                }
 
-                // --- Build bar only in normal PLAY phase and no blocking trade ---
-                val localPlayer = state.players[localPlayerId]
-                if (state.phase == GamePhase.PLAY && !hasBlockingTrade) {
-                    val canBuildRoadNow = localPlayer != null &&
-                            vm.legalRoadEdgesFor(localPlayerId, state).isNotEmpty()
+                    // --- Build bar only in normal PLAY phase and no blocking trade ---
+                    val localPlayer = state.players[localPlayerId]
+                    if (state.phase == GamePhase.PLAY && !hasBlockingTrade) {
+                        val canBuildRoadNow = localPlayer != null &&
+                                vm.legalRoadEdgesFor(localPlayerId, state).isNotEmpty()
 
-                    val canBuildSettlementNow = localPlayer != null &&
-                            vm.legalSettlementVerticesFor(localPlayerId, state).isNotEmpty()
+                        val canBuildSettlementNow = localPlayer != null &&
+                                vm.legalSettlementVerticesFor(localPlayerId, state).isNotEmpty()
 
-                    BuildBar(
-                        canBuildRoad = canBuildRoadNow,
-                        placingRoad = placingRoad,
-                        onToggleRoadPlacement = {
-                            if (canBuildRoadNow && isMyTurn && state.phase == GamePhase.PLAY) {
-                                val newState = !placingRoad
-                                placingRoad = newState
-                                if (newState) {
-                                    placingSettlement = false
+                        BuildBar(
+                            canBuildRoad = canBuildRoadNow,
+                            placingRoad = placingRoad,
+                            onToggleRoadPlacement = {
+                                if (canBuildRoadNow && isMyTurn && state.phase == GamePhase.PLAY) {
+                                    val newState = !placingRoad
+                                    placingRoad = newState
+                                    if (newState) {
+                                        placingSettlement = false
+                                    }
+                                }
+                            },
+                            canBuildSettlement = canBuildSettlementNow,
+                            placingSettlement = placingSettlement,
+                            onToggleSettlementPlacement = {
+                                if (canBuildSettlementNow && isMyTurn && state.phase == GamePhase.PLAY) {
+                                    val newState = !placingSettlement
+                                    placingSettlement = newState
+                                    if (newState) {
+                                        placingRoad = false
+                                    }
                                 }
                             }
-                        },
-                        canBuildSettlement = canBuildSettlementNow,
-                        placingSettlement = placingSettlement,
-                        onToggleSettlementPlacement = {
-                            if (canBuildSettlementNow && isMyTurn && state.phase == GamePhase.PLAY) {
-                                val newState = !placingSettlement
-                                placingSettlement = newState
-                                if (newState) {
-                                    placingRoad = false
-                                }
-                            }
-                        }
+                        )
+                    }
+
+                    // --- Setup prompt bar (bottom) ---
+                    val setupPrompt = vm.setupPromptFor(localPlayerId)
+                    if (setupPrompt != null) {
+                        Text(
+                            setupPrompt,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+
+                    // --- Pending trade banner (interruptive) ---
+                    if (pendingTrade != null) {
+                        TradeBanner(
+                            pendingTrade = pendingTrade,
+                            localPlayerId = localPlayerId,
+                            players = state.players,
+                            onAccept = { vm.onLocalAcceptTrade(localPlayerId) },
+                            onReject = { vm.onLocalRejectTrade(localPlayerId) },
+                            onCancel = { vm.onLocalCancelTrade(localPlayerId) }
+                        )
+                    }
+
+                    // --- Local player's resource deck ("hand" of cards) ---
+                    PlayerResourceDeck(
+                        title = "Your Resources",
+                        player = localPlayer
                     )
                 }
 
-                // --- Setup prompt bar (bottom) ---
-                val setupPrompt = vm.setupPromptFor(localPlayerId)
-                if (setupPrompt != null) {
-                    Text(
-                        setupPrompt,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-
-                // --- Pending trade banner (interruptive) ---
-                if (pendingTrade != null) {
-                    TradeBanner(
-                        pendingTrade = pendingTrade,
-                        localPlayerId = localPlayerId,
-                        players = state.players,
-                        onAccept = { vm.onLocalAcceptTrade(localPlayerId) },
-                        onReject = { vm.onLocalRejectTrade(localPlayerId) },
-                        onCancel = { vm.onLocalCancelTrade(localPlayerId) }
-                    )
-                }
-
-                // --- Local player's resource deck ("hand" of cards) ---
-                PlayerResourceDeck(
-                    title = "Your Resources",
-                    player = localPlayer
+                // --- Floating icon buttons: Trade + Roll/End Turn ---
+                TurnActionButtons(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp),
+                    isMyTurn = isMyTurn,
+                    phase = state.phase,
+                    hasRolledThisTurn = state.hasRolledThisTurn,
+                    canStartTrade = vm.canStartTrade(localPlayerId, state),
+                    hasBlockingTrade = hasBlockingTrade,
+                    onRollDice = { vm.onLocalRollDice(localPlayerId) },
+                    onEndTurn = { vm.onLocalEndTurn(localPlayerId) },
+                    onTrade = { showTradeDialog = true }
                 )
             }
         }
@@ -367,10 +363,11 @@ fun GameScreen(
     )
 
     // Trade dialog
-    val localPlayer = state.players[localPlayerId]
-    if (showTradeDialog && localPlayer != null) {
+    val localPlayerForDialog = state.players[localPlayerId]
+    if (showTradeDialog && localPlayerForDialog != null) {
         TradeDialog(
-            localPlayer = localPlayer,
+            localPlayer = localPlayerForDialog,
+            bankRateFor = { res -> vm.bankRateFor(localPlayerId, res) },
             onSendOffer = { offer, request ->
                 vm.onLocalProposeTrade(localPlayerId, offer, request)
             },
@@ -378,9 +375,7 @@ fun GameScreen(
                 vm.onLocalFlamingoTrade(localPlayerId, give, get)
             },
             onDismiss = { showTradeDialog = false },
-            // Use whatever drawable you want as the trade background:
             backgroundResId = R.drawable.game_background
-            // or some custom R.drawable.trade_background if you add one
         )
     }
 }
@@ -561,18 +556,20 @@ private fun TradeBanner(
 @Composable
 private fun TradeDialog(
     localPlayer: PlayerState,
+    bankRateFor: (Resource) -> Int,
     onSendOffer: (offer: Map<Resource, Int>, request: Map<Resource, Int>) -> Unit,
     onFlamingoTrade: (give: Resource, get: Resource) -> Unit,
     onDismiss: () -> Unit,
-    // NEW: optional background image for the dialog
-    backgroundResId: Int? = null
+    backgroundResId: Int? = null // you can keep this if you still want an inner bg image
 ) {
     val resCounts = localPlayer.resources
     val allResources = Resource.values().filter { it != Resource.LAKE }
 
+    // Do they have ANY 3:1 port (for UI text only)?
+    val hasAnyPortBonus = allResources.any { bankRateFor(it) == 3 }
+
     var mode by remember { mutableStateOf(TradeMode.PLAYER) }
 
-    // Shared two rows – interpretation depends on mode.
     var giveAmounts by remember { mutableStateOf<Map<Resource, Int>>(emptyMap()) }
     var getAmounts by remember { mutableStateOf<Map<Resource, Int>>(emptyMap()) }
 
@@ -595,7 +592,6 @@ private fun TradeDialog(
             }
 
             TradeMode.FLAMINGO -> {
-                // For Flamingo: total "get" must be at most 1 across all resources.
                 val othersTotal = getAmounts.filterKeys { it != res }.values.sum()
                 val allowedForThis = (1 - othersTotal).coerceAtLeast(0)
                 val clamped = v.coerceIn(0, allowedForThis)
@@ -607,39 +603,43 @@ private fun TradeDialog(
         }
     }
 
-    // Player↔Player confirmation condition
     val canSendPlayerTrade =
         giveAmounts.values.any { it > 0 } && getAmounts.values.any { it > 0 }
 
-    // Flamingo Run confirmation condition
     val flamingoGiveNonZero = giveAmounts.filterValues { it > 0 }
-    val flamingoGiveTotal = flamingoGiveNonZero.values.sum()
     val flamingoGetNonZero = getAmounts.filterValues { it > 0 }
-    val flamingoGetTotal = flamingoGetNonZero.values.sum()
 
-    val canFlamingoTrade =
-        flamingoGiveTotal >= 4 &&
-                flamingoGiveNonZero.size == 1 &&
-                (resCounts[flamingoGiveNonZero.keys.first()] ?: 0) >= 4 &&
-                flamingoGetNonZero.size == 1 &&
-                flamingoGetTotal == 1
+    val canFlamingoTrade: Boolean = run {
+        if (flamingoGiveNonZero.size != 1 || flamingoGetNonZero.size != 1) {
+            false
+        } else {
+            val (giveRes, giveCount) = flamingoGiveNonZero.entries.first()
+            val (_, getCount) = flamingoGetNonZero.entries.first()
+
+            val required = bankRateFor(giveRes)      // 3 or 4 depending on ports
+            val have = resCounts[giveRes] ?: 0
+
+            giveCount == required && getCount == 1 && have >= required
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        // Make the dialog card itself transparent so our Box background is visible
-        containerColor = Color.Transparent,
+        // ← IMPORTANT: use a normal surface, not transparent
+        containerColor = MaterialTheme.colorScheme.surface,
         text = {
             Box(
                 modifier = Modifier.fillMaxWidth()
             ) {
-                // Optional background image for the dialog content
+                // If you still want a faint art background *inside* the dialog,
+                // keep this. If you want it totally clean, just delete this `if`.
                 if (backgroundResId != null) {
                     Image(
                         painter = painterResource(id = backgroundResId),
                         contentDescription = null,
                         modifier = Modifier.matchParentSize(),
                         contentScale = ContentScale.Crop,
-                        alpha = 0.45f // a little faded so text stays readable
+                        alpha = 0.15f // made lighter so it doesn’t feel “transparent”
                     )
                 }
 
@@ -649,7 +649,6 @@ private fun TradeDialog(
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // Title centered
                     Text(
                         "Trade",
                         style = MaterialTheme.typography.titleLarge,
@@ -691,7 +690,11 @@ private fun TradeDialog(
 
                     val titleText = when (mode) {
                         TradeMode.PLAYER -> "Offer to opponent"
-                        TradeMode.FLAMINGO -> "Flamingo Run (4 : 1)"
+                        TradeMode.FLAMINGO ->
+                            if (hasAnyPortBonus)
+                                "Flamingo Run (3:1 / 4:1 – port bonus on some resources)"
+                            else
+                                "Flamingo Run (4:1)"
                     }
                     Text(
                         titleText,
@@ -700,14 +703,26 @@ private fun TradeDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    // --- YOU GIVE (centered) ---
+                    // --- YOU GIVE ---
+                    val giveLabel = when (mode) {
+                        TradeMode.PLAYER -> "You give"
+                        TradeMode.FLAMINGO -> {
+                            if (flamingoGiveNonZero.size == 1) {
+                                val giveRes = flamingoGiveNonZero.keys.first()
+                                val rate = bankRateFor(giveRes)
+                                "You give ($rate of one type)"
+                            } else {
+                                "You give (3 or 4 of one type)"
+                            }
+                        }
+                    }
+
                     Box(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            if (mode == TradeMode.PLAYER) "You give"
-                            else "You give (4 of one type)",
+                            giveLabel,
                             style = MaterialTheme.typography.labelLarge
                         )
                     }
@@ -721,14 +736,18 @@ private fun TradeDialog(
 
                     Spacer(Modifier.height(8.dp))
 
-                    // --- YOU GET (centered) ---
+                    // --- YOU GET ---
+                    val getLabel = when (mode) {
+                        TradeMode.PLAYER -> "You get"
+                        TradeMode.FLAMINGO -> "You get (1 of any)"
+                    }
+
                     Box(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            if (mode == TradeMode.PLAYER) "You get"
-                            else "You get (1 of any)",
+                            getLabel,
                             style = MaterialTheme.typography.labelLarge
                         )
                     }
@@ -753,6 +772,19 @@ private fun TradeDialog(
                 TradeMode.FLAMINGO -> canFlamingoTrade
             }
 
+            val buttonText = when (mode) {
+                TradeMode.PLAYER -> "Send Offer"
+                TradeMode.FLAMINGO -> {
+                    if (flamingoGiveNonZero.size == 1) {
+                        val giveRes = flamingoGiveNonZero.keys.first()
+                        val rate = bankRateFor(giveRes)
+                        "Flamingo Run ($rate → 1)"
+                    } else {
+                        "Flamingo Run"
+                    }
+                }
+            }
+
             Button(
                 onClick = {
                     when (mode) {
@@ -773,12 +805,7 @@ private fun TradeDialog(
                 enabled = enabled,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(
-                    if (mode == TradeMode.PLAYER)
-                        "Send Offer"
-                    else
-                        "Flamingo Run (4 → 1)"
-                )
+                Text(buttonText)
             }
         },
         dismissButton = {
@@ -786,7 +813,93 @@ private fun TradeDialog(
         }
     )
 }
+@Composable
+private fun TurnActionButtons(
+    modifier: Modifier = Modifier,
+    isMyTurn: Boolean,
+    phase: GamePhase,
+    hasRolledThisTurn: Boolean,
+    canStartTrade: Boolean,
+    hasBlockingTrade: Boolean,
+    onRollDice: () -> Unit,
+    onEndTurn: () -> Unit,
+    onTrade: () -> Unit
+) {
+    val canRoll =
+        isMyTurn && phase == GamePhase.PLAY && !hasRolledThisTurn && !hasBlockingTrade
+    val canEnd =
+        isMyTurn && phase == GamePhase.PLAY && hasRolledThisTurn && !hasBlockingTrade
 
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // Top: Trade
+        ImageSquareButton(
+            enabled = canStartTrade && !hasBlockingTrade,
+            onClick = onTrade,
+            painterResId = R.drawable.ic_trade,      // your PNG
+            contentDescription = "Trade",
+            size = 56.dp,
+            cornerRadius = 12.dp
+        )
+
+        // Bottom: Roll or End Turn
+        ImageSquareButton(
+            enabled = canRoll || canEnd,
+            onClick = {
+                when {
+                    canRoll -> onRollDice()
+                    canEnd  -> onEndTurn()
+                }
+            },
+            painterResId = if (!hasRolledThisTurn)
+                R.drawable.ic_roll      // your dice PNG
+            else
+                R.drawable.ic_end_turn,      // your end-turn PNG
+            contentDescription = if (!hasRolledThisTurn) "Roll Dice" else "End Turn",
+            size = 64.dp,
+            cornerRadius = 16.dp
+        )
+    }
+}
+@Composable
+private fun ImageSquareButton(
+    modifier: Modifier = Modifier,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    painterResId: Int,
+    contentDescription: String,
+    size: Dp = 64.dp,
+    cornerRadius: Dp = 16.dp,
+    borderWidth: Dp = 2.dp
+) {
+    val shape = RoundedCornerShape(cornerRadius)
+
+    val borderColor =
+        if (enabled) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(shape)
+            // 🔹 ONLY an outline now – no background fill.
+            .border(borderWidth, borderColor, shape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = painterResId),
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .fillMaxSize(0.8f)         // adjust if you want bigger/smaller
+                .alpha(if (enabled) 1f else 0.4f),  // dim when disabled
+            contentScale = ContentScale.Fit        // show whole PNG, no crop
+        )
+    }
+}
 @Composable
 private fun ResourceAmountRow(
     resources: List<Resource>,
@@ -853,9 +966,15 @@ private fun BuildBar(
     onToggleRoadPlacement: () -> Unit,
     canBuildSettlement: Boolean,
     placingSettlement: Boolean,
-    onToggleSettlementPlacement: () -> Unit
+    onToggleSettlementPlacement: () -> Unit,
+    // optional extras so your existing call still compiles
+    canBuildCity: Boolean = false,
+    placingCity: Boolean = false,
+    onToggleCityPlacement: () -> Unit = {},
+    canBuyDevCard: Boolean = false,
+    onBuyDevCard: () -> Unit = {}
 ) {
-    if (!canBuildRoad && !canBuildSettlement) return
+    if (!canBuildRoad && !canBuildSettlement && !canBuildCity && !canBuyDevCard) return
 
     Row(
         modifier = Modifier
@@ -864,29 +983,87 @@ private fun BuildBar(
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Road
         if (canBuildRoad) {
-            AssistChip(
-                onClick = onToggleRoadPlacement,
-                label = {
-                    Text(
-                        if (placingRoad) "Tap a highlighted edge to place road"
-                        else "Build Road"
-                    )
-                }
+            GameActionIconButton(
+                iconRes = R.drawable.ic_road,          // <-- your road PNG
+                contentDescription =
+                    if (placingRoad) "Tap a highlighted edge to place a road"
+                    else "Build road",
+                enabled = true,
+                modifier = Modifier.size(40.dp),
+                onClick = onToggleRoadPlacement
             )
         }
 
+        // Settlement
         if (canBuildSettlement) {
-            AssistChip(
-                onClick = onToggleSettlementPlacement,
-                label = {
-                    Text(
-                        if (placingSettlement) "Tap a highlighted corner to place settlement"
-                        else "Build Settlement"
-                    )
-                }
+            GameActionIconButton(
+                iconRes = R.drawable.ic_settle,   // <-- your settlement PNG
+                contentDescription =
+                    if (placingSettlement) "Tap a highlighted corner to place a settlement"
+                    else "Build settlement",
+                enabled = true,
+                modifier = Modifier.size(40.dp),
+                onClick = onToggleSettlementPlacement
             )
         }
+
+        // City (if/when you hook it up)
+        if (canBuildCity) {
+            GameActionIconButton(
+                iconRes = R.drawable.ic_city,         // <-- your city PNG
+                contentDescription =
+                    if (placingCity) "Tap a highlighted corner to upgrade to a city"
+                    else "Build city",
+                enabled = true,
+                modifier = Modifier.size(40.dp),
+                onClick = onToggleCityPlacement
+            )
+        }
+
+        // Dev card (if/when you hook it up)
+        if (canBuyDevCard) {
+            GameActionIconButton(
+                iconRes = R.drawable.ic_dev,     // <-- your dev-card PNG
+                contentDescription = "Buy development card",
+                enabled = true,
+                modifier = Modifier.size(40.dp),
+                onClick = onBuyDevCard
+            )
+        }
+    }
+}
+@Composable
+private fun GameActionIconButton(
+    iconRes: Int,
+    contentDescription: String,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    OutlinedIconButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (enabled) Color.Red.copy(alpha = 0.7f)
+            else Color.White.copy(alpha = 0.3f)
+        ),
+        colors = IconButtonDefaults.outlinedIconButtonColors(
+            contentColor = Color.White
+        )
+    ) {
+        Image(
+            painter = painterResource(id = iconRes),
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(6.dp),
+            contentScale = ContentScale.Fit  // shows full PNG, not zoomed/cropped
+        )
     }
 }
 private fun Resource.displayName(): String =

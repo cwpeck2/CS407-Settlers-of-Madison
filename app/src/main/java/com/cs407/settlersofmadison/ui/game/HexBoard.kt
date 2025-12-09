@@ -1,5 +1,6 @@
 package com.cs407.settlersofmadison.ui.game
 
+import android.graphics.Paint
 import android.util.Log
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -8,7 +9,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -24,10 +27,11 @@ import androidx.compose.ui.unit.IntSize
 import com.cs407.settlersofmadison.R
 import com.cs407.settlersofmadison.domain.model.EdgeKey
 import com.cs407.settlersofmadison.domain.model.HexCoord
+import com.cs407.settlersofmadison.domain.model.Landmark
 import com.cs407.settlersofmadison.domain.model.Resource
 import com.cs407.settlersofmadison.domain.model.Tile
 import com.cs407.settlersofmadison.domain.model.VertexKey
-import com.cs407.settlersofmadison.domain.model.canonicalVertex   // <-- NEW IMPORT
+import com.cs407.settlersofmadison.domain.model.canonicalVertex
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
@@ -43,15 +47,40 @@ fun HexBoard(
     onTileTap: ((HexCoord) -> Unit)?,
     onEdgeTap: ((EdgeKey) -> Unit)? = null,
     highlightEdges: Set<EdgeKey> = emptySet(),
-    highlightVertices: Set<VertexKey> = emptySet()
+    highlightVertices: Set<VertexKey> = emptySet(),
+    portResources: Map<VertexKey, Resource> = emptyMap()
 ) {
     val tileTextures: Map<Resource, ImageBitmap> = mapOf(
-        Resource.CONCRETE to ImageBitmap.imageResource(id = R.drawable.tile_concrete),
-        Resource.STUDENT  to ImageBitmap.imageResource(id = R.drawable.tile_student),
-        Resource.BUCKY    to ImageBitmap.imageResource(id = R.drawable.tile_bucky),
-        Resource.CHAIR    to ImageBitmap.imageResource(id = R.drawable.tile_chair),
+        Resource.CONCRETE    to ImageBitmap.imageResource(id = R.drawable.tile_concrete),
+        Resource.STUDENT     to ImageBitmap.imageResource(id = R.drawable.tile_student),
+        Resource.BUCKY       to ImageBitmap.imageResource(id = R.drawable.tile_bucky),
+        Resource.CHAIR       to ImageBitmap.imageResource(id = R.drawable.tile_chair),
         Resource.CHEESE_CURD to ImageBitmap.imageResource(id = R.drawable.tile_cheese_curds)
     )
+
+    // PORT ICONS:
+    // Right now we just re-use tile textures, scaled small in a ring.
+    // If you have dedicated PNGs, swap these to your own drawables, e.g.:
+    //   ImageBitmap.imageResource(R.drawable.port_concrete), etc.
+    val portIcons: Map<Resource, ImageBitmap> = mapOf(
+        Resource.CONCRETE    to ImageBitmap.imageResource(R.drawable.concrete_port),
+        Resource.STUDENT     to ImageBitmap.imageResource(R.drawable.student_port),
+        Resource.BUCKY       to ImageBitmap.imageResource(R.drawable.bucky_port),
+        Resource.CHAIR       to ImageBitmap.imageResource(R.drawable.chair_port),
+        Resource.CHEESE_CURD to ImageBitmap.imageResource(R.drawable.cheese_curd_port)
+        // no entry for Resource.LAKE
+    )
+    val landmarkTextures: Map<Landmark, ImageBitmap> =
+        Landmark.values().associateWith { lm ->
+            val resId = when (lm) {
+                Landmark.BASCOM_HILL      -> R.drawable.tile_landmark_bascom
+                Landmark.CAPITOL          -> R.drawable.tile_landmark_capitol
+                Landmark.MEMORIAL_UNION   -> R.drawable.tile_landmark_union
+                Landmark.ENGINEERING_HALL -> R.drawable.tile_landmark_engineering
+                else                      -> R.drawable.tile_concrete
+            }
+            ImageBitmap.imageResource(resId)
+        }
     val tiles = roomState.tiles
     val graph = remember(tiles) { buildBoardGraph(tiles) }
 
@@ -94,7 +123,8 @@ fun HexBoard(
                     edgeCenters,
                     hexSize,
                     highlightEdges,
-                    highlightVertices
+                    highlightVertices,
+                    tiles
                 ) {
                     detectTapGestures { tapOffset ->
                         // If robber is being moved → choose tile
@@ -104,10 +134,18 @@ fun HexBoard(
                                 tileCenters = tileCenters,
                                 maxDistancePx = hexSize * 0.9f
                             )
+
                             if (tileCoord != null) {
-                                if (robberCoord != null && tileCoord == robberCoord) {
+                                val tile = tiles.firstOrNull { it.coord == tileCoord }
+
+                                // Don’t allow robber on lakes / water tiles or on the same tile
+                                if (tile == null ||
+                                    tile.resource == Resource.LAKE ||
+                                    (robberCoord != null && tileCoord == robberCoord)
+                                ) {
                                     return@detectTapGestures
                                 }
+
                                 Log.d(
                                     "HEXDEBUG",
                                     "Robber tap at (${tapOffset.x}, ${tapOffset.y}) → tile $tileCoord"
@@ -151,14 +189,19 @@ fun HexBoard(
         ) {
             val tileStrokeWidth = hexSize * 0.06f
 
-            val textPaint = android.graphics.Paint().apply {
+            val textPaint = Paint().apply {
                 color = android.graphics.Color.BLACK
-                textAlign = android.graphics.Paint.Align.CENTER
+                textAlign = Paint.Align.CENTER
                 textSize = hexSize * 0.4f
                 isFakeBoldText = true
                 isAntiAlias = true
             }
-
+            val landmarkPaint = Paint().apply {
+                color = android.graphics.Color.BLACK
+                textAlign = Paint.Align.CENTER
+                textSize = hexSize * 0.22f
+                isAntiAlias = true
+            }
             // --- Tiles ---
             tiles.forEach { tile ->
                 val center = tileCenters[tile.coord] ?: return@forEach
@@ -174,7 +217,10 @@ fun HexBoard(
                     close()
                 }
 
-                val texture = tileTextures[tile.resource]
+                val texture = when (val lm = tile.landmark) {
+                    null -> tileTextures[tile.resource]                       // normal resource tile
+                    else -> landmarkTextures[lm] ?: tileTextures[tile.resource]
+                }
 
                 if (texture != null) {
                     // Slightly larger than the hex so the art fills it, even with padding
@@ -221,33 +267,62 @@ fun HexBoard(
                     )
                 }
 
-// --- Number token disc on top of the tile ---
-                val tokenRadius = hexSize * 0.32f
+                // --- Number token disc on top of the tile ---
+                val isLake = tile.resource == Resource.LAKE
+                val hasNumber = tile.number != 0
 
-// light red fill
-                drawCircle(
-                    color = Color(0xFFFFFFFF),
-                    radius = tokenRadius,
-                    center = center
-                )
+                if (!isLake && hasNumber) {
+                    val tokenRadius = hexSize * 0.32f
 
-// darker red ring around it
-                drawCircle(
-                    color = Color(0xFFB71C1C),
-                    radius = tokenRadius,
-                    center = center,
-                    style = Stroke(width = hexSize * 0.03f)
-                )
+                    // light fill
+                    drawCircle(
+                        color = Color(0xFFFFD592),
+                        radius = tokenRadius,
+                        center = center
+                    )
 
-// number text on top of the disc
-                drawContext.canvas.nativeCanvas.drawText(
-                    tile.number.toString(),
-                    center.x,
-                    center.y + textPaint.textSize / 3f,
-                    textPaint
-                )
+                    // ring (same color or change if you want contrast)
+                    drawCircle(
+                        color = Color(0xFFFFD592),
+                        radius = tokenRadius,
+                        center = center,
+                        style = Stroke(width = hexSize * 0.03f)
+                    )
+
+                    // number text on top of the disc
+                    drawContext.canvas.nativeCanvas.drawText(
+                        tile.number.toString(),
+                        center.x,
+                        center.y + textPaint.textSize / 3f,
+                        textPaint
+                    )
+                }
             }
 
+            // --- Ports: show 5 resource icons in a ring around each port vertex ---
+            portResources.forEach { (vKey, res) ->
+                val pos = vertexPositions[vKey] ?: return@forEach
+                val icon = portIcons[res] ?: return@forEach
+
+                // subtle circle behind to make it pop
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.35f),
+                    radius = hexSize * 0.45f,
+                    center = pos
+                )
+
+                val iconSize = (hexSize * 0.8f).toInt()
+                val topLeft = IntOffset(
+                    (pos.x - iconSize / 2f).toInt(),
+                    (pos.y - iconSize / 2f).toInt()
+                )
+
+                drawImage(
+                    image = icon,
+                    dstSize = IntSize(iconSize, iconSize),
+                    dstOffset = topLeft
+                )
+            }
 
             // Highlight edges (build-road mode)
             highlightEdges.forEach { eKey ->
@@ -565,11 +640,10 @@ private fun findNearestTile(
 
 private fun Resource.toTileColor(): Color =
     when (this) {
-        Resource.CONCRETE  -> Color(0xFF8F8F8F)
-        Resource.STUDENT -> Color(0xFFA01CB7)
-        Resource.BUCKY -> Color(0xFFF60000)
-        Resource.CHAIR -> Color(0xFF0F5215)
-        Resource.CHEESE_CURD   -> Color(0xFFFFBE4F)
-        Resource.LAKE -> Color(0xFF2196F3)
+        Resource.CONCRETE    -> Color(0xFF8F8F8F)
+        Resource.STUDENT     -> Color(0xFFA01CB7)
+        Resource.BUCKY       -> Color(0xFFF60000)
+        Resource.CHAIR       -> Color(0xFF0F5215)
+        Resource.CHEESE_CURD -> Color(0xFFFFBE4F)
+        Resource.LAKE        -> Color(0xFF2196F3)
     }
-

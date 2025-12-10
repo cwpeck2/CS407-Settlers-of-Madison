@@ -1,69 +1,128 @@
 package com.cs407.settlersofmadison.ui.lobby
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.rememberAsyncImagePainter
 
 @Composable
 fun PlayerAvatar(
     label: String,
     active: Boolean,
     isHost: Boolean,
-    ready: Boolean
+    ready: Boolean,
+    // preferred color + optional avatar URI
+    colorArgb: Long? = null,
+    avatarUri: String? = null,
+    // NEW:
+    modifier: Modifier = Modifier,
+    showEditIcon: Boolean = false,
+    onClick: (() -> Unit)? = null
 ) {
-    val borderColor = when {
-        !active -> Color.Gray.copy(alpha = 0.6f)
-        ready   -> Color(0xFF21C35E) // green “ready” ring
-        else    -> MaterialTheme.colorScheme.primary
+    val ringColor = when {
+        !active -> Color.Gray.copy(alpha = 0.5f)
+        ready   -> Color(0xFF21C35E)  // green “ready”
+        colorArgb != null -> Color(colorArgb)
+        else -> MaterialTheme.colorScheme.primary
     }
 
-    ElevatedCard(
-        shape = CircleShape,
-        elevation = CardDefaults.elevatedCardElevation(if (active) 10.dp else 2.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = Color.Black.copy(alpha = 0.35f)
-        )
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .size(120.dp)
-                .clip(CircleShape)
-                .border(2.dp, borderColor, CircleShape)
-                .padding(10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+        Box(
+            modifier = modifier.size(80.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = if (isHost) Icons.Filled.AccountCircle else Icons.Filled.Person,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(48.dp)
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                label,
-                color = Color.White,
-                style = MaterialTheme.typography.labelLarge
-            )
-            if (ready) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "Ready",
-                    color = Color(0xFF21C35E),
-                    style = MaterialTheme.typography.labelSmall
+            // The circular avatar itself (clickable if onClick != null)
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(CircleShape)
+                    .border(
+                        BorderStroke(3.dp, ringColor),
+                        shape = CircleShape
+                    )
+                    .let { base ->
+                        if (onClick != null) {
+                            base.clickable { onClick() }
+                        } else {
+                            base
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (!avatarUri.isNullOrBlank()) {
+                    Image(
+                        painter = rememberAsyncImagePainter(model = avatarUri),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    androidx.compose.material3.Icon(
+                        imageVector = if (isHost) Icons.Filled.AccountCircle else Icons.Filled.Person,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(56.dp)
+                    )
+                }
+            }
+
+            // Little pencil overlay for profile screen ONLY
+            if (showEditIcon && onClick != null) {
+                androidx.compose.material3.Icon(
+                    imageVector = Icons.Filled.Edit,
+                    contentDescription = "Edit avatar",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface)
+                        .border(
+                            BorderStroke(1.dp, MaterialTheme.colorScheme.surface),
+                            CircleShape
+                        )
+                        .clickable { onClick() }
                 )
             }
         }
+
+        Text(
+            text = label,
+            color = Color.White,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        if (ready) {
+            Text(
+                "Ready",
+                color = Color(0xFF21C35E),
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
     }
 }
-

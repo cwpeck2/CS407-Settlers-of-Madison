@@ -3,6 +3,7 @@ package com.cs407.settlersofmadison.ui.lobby
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -17,13 +18,36 @@ import com.cs407.settlersofmadison.ui.components.ScreenImageBackground
 fun HostLobbyScreen(
     vm: LobbyViewModel,
     onBackToMain: () -> Unit,
-    onStartGame: () -> Unit
+    onStartGame: () -> Unit,
+    profileVm: ProfileViewModel
 ) {
     val state by vm.state.collectAsState()
     val peerReady by vm.peerReady.collectAsState(initial = false)
 
+    val profile by profileVm.profile.collectAsState()
+    val remoteProfile by vm.remoteProfile.collectAsState()
+
     val isConnected = state == ConnState.Connected
-    val canStart = isConnected && peerReady   // ✅ only when guest is ready
+    val canStart = isConnected && peerReady
+
+    val hostLabel = profile.nickname.takeIf { it.isNotBlank() } ?: "You (Host)"
+    val hostColor = profile.preferredColor
+    val hostAvatar = profile.avatarUri
+
+    val guestLabel = when {
+        remoteProfile.nickname.isNotBlank() -> remoteProfile.nickname
+        isConnected -> "Guest"
+        else -> "Waiting for guest…"
+    }
+    val guestColor = remoteProfile.preferredColor
+    val guestAvatar = remoteProfile.avatarUri
+
+    // NEW: whenever we are connected AND our profile changes, send it to the guest
+    LaunchedEffect(isConnected, profile) {
+        if (isConnected) {
+            vm.sendLobbyProfile("host", profile)
+        }
+    }
 
     ScreenImageBackground(imageRes = com.cs407.settlersofmadison.R.drawable.create_room) {
         Column(
@@ -59,30 +83,30 @@ fun HostLobbyScreen(
                         color = Color.White
                     )
 
-                    // Debug line – keep this so you can see it flip
-                    Text(
-                        text = "Debug: peerReady=$peerReady, state=$state",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.7f)
-                    )
-
                     Spacer(Modifier.height(16.dp))
 
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(48.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.Top
                     ) {
+                        // LOCAL (host) avatar uses profile
                         PlayerAvatar(
-                            label = "You (Host)",
+                            label = hostLabel,
                             active = true,
                             isHost = true,
-                            ready = true      // host is always "ready"
+                            ready = true,   // host always “ready”
+                            colorArgb = hostColor,
+                            avatarUri = hostAvatar
                         )
+
+                        // REMOTE (guest) – use remoteProfile if we have it
                         PlayerAvatar(
-                            label = if (isConnected) "Player 2" else "Waiting…",
+                            label = guestLabel,
                             active = isConnected,
                             isHost = false,
-                            ready = peerReady // ✅ should turn green when guest readies
+                            ready = peerReady,
+                            colorArgb = guestColor,
+                            avatarUri = guestAvatar
                         )
                     }
 

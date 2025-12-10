@@ -19,19 +19,42 @@ import com.cs407.settlersofmadison.ui.components.ScreenImageBackground
 fun JoinLobbyScreen(
     vm: LobbyViewModel,
     onBackToMain: () -> Unit,
-    onGameStarted: () -> Unit
+    onGameStarted: () -> Unit,
+    profileVm: ProfileViewModel
 ) {
     val state by vm.state.collectAsState()
     val localReady by vm.localReady.collectAsState(initial = false)
     val peerReady by vm.peerReady.collectAsState(initial = false)
     val gameStarted by vm.gameStarted.collectAsState(initial = false)
 
+    val profile by profileVm.profile.collectAsState(initial = ProfileSettings())
+    val remoteProfile by vm.remoteProfile.collectAsState()
+
     val isConnected = state == ConnState.Connected
+
+    val guestLabel = profile.nickname.takeIf { it.isNotBlank() } ?: "You (Guest)"
+    val guestColor = profile.preferredColor
+    val guestAvatar = profile.avatarUri
+
+    val hostLabel = when {
+        remoteProfile.nickname.isNotBlank() -> remoteProfile.nickname
+        isConnected -> "Host"
+        else -> "Waiting for host…"
+    }
+    val hostColor = remoteProfile.preferredColor
+    val hostAvatar = remoteProfile.avatarUri
 
     // When host sends START_GAME, this flips true → navigate to Game
     LaunchedEffect(gameStarted) {
         if (gameStarted) {
             onGameStarted()
+        }
+    }
+
+    // NEW: send our profile to the host when connected
+    LaunchedEffect(isConnected, profile) {
+        if (isConnected) {
+            vm.sendLobbyProfile("guest", profile)
         }
     }
 
@@ -73,19 +96,26 @@ fun JoinLobbyScreen(
 
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(48.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.Top
                     ) {
+                        // Host avatar (remote side)
                         PlayerAvatar(
-                            label = "Host",
+                            label = hostLabel,
                             active = isConnected,
                             isHost = true,
-                            ready = peerReady    // host "ready" (we treat as true)
+                            ready = peerReady,    // host “ready”
+                            colorArgb = hostColor,
+                            avatarUri = hostAvatar
                         )
+
+                        // Guest avatar (local profile)
                         PlayerAvatar(
-                            label = "You",
+                            label = guestLabel,
                             active = true,
                             isHost = false,
-                            ready = localReady
+                            ready = localReady,
+                            colorArgb = guestColor,
+                            avatarUri = guestAvatar
                         )
                     }
 

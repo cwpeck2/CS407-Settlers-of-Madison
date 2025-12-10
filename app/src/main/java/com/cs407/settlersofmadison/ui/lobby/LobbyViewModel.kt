@@ -1,10 +1,12 @@
 package com.cs407.settlersofmadison.ui.lobby
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.cs407.settlersofmadison.data.p2p.ConnState
 import com.cs407.settlersofmadison.data.p2p.P2PHolder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlin.random.Random
 
 class LobbyViewModel : ViewModel() {
@@ -24,8 +26,58 @@ class LobbyViewModel : ViewModel() {
     // game started flag (host -> guest)
     val gameStarted: StateFlow<Boolean> = p2p.gameStarted
 
-    // NEW: Expose the seed from P2P
+    // Expose the seed from P2P
     val gameSeed: StateFlow<Long> = p2p.gameSeed
+
+    // ---------- Remote profile for lobby (nickname, color, avatar) ----------
+    private val _remoteProfile = MutableStateFlow(ProfileSettings())
+    val remoteProfile: StateFlow<ProfileSettings> = _remoteProfile
+
+    init {
+        // Listen for lobby-level profile messages
+        viewModelScope.launch {
+            p2p.incoming.collect { line ->
+                // Format:
+                // LOBBY:PROFILE:<playerId>:<nickname>:<colorLong>:<avatarUri?>
+                if (line.startsWith("LOBBY:PROFILE:")) {
+                    val parts = line.split(":")
+
+                    if (parts.size >= 5) {
+                        val nickname = parts[3]
+                        val colorLong = parts[4].toLongOrNull()
+
+                        // Everything after the 5th colon is the avatarUri (so it can contain ':')
+                        val avatarUri: String? = if (parts.size >= 6) {
+                            parts.subList(5, parts.size).joinToString(":").ifBlank { null }
+                        } else {
+                            null
+                        }
+
+                        _remoteProfile.value = ProfileSettings(
+                            nickname = nickname,
+                            preferredColor = colorLong,
+                            avatarUri = avatarUri
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Send our lobby profile (host or guest) to the peer
+    fun sendLobbyProfile(playerId: String, profile: ProfileSettings) {
+        // Colon-safe nickname (just in case)
+        val safeNickname = (profile.nickname).replace(":", " ")
+        val colorStr = (profile.preferredColor ?: -1L).toString()
+
+        // avatarUri may contain ':', so we put it at the END and reconstruct
+        val avatarPart = profile.avatarUri ?: ""
+
+        // Message format:
+        // LOBBY:PROFILE:<playerId>:<nickname>:<colorLong>:<avatarUri?>
+        val msg = "LOBBY:PROFILE:$playerId:$safeNickname:$colorStr:$avatarPart"
+        p2p.send(msg)
+    }
 
     fun host(port: Int) {
         _localReady.value = false
@@ -43,7 +95,7 @@ class LobbyViewModel : ViewModel() {
         p2p.setReady(newReady)
     }
 
-    // CHANGED: Generate seed and start
+    // Generate seed and start, host side
     fun hostStartGame() {
         val seed = Random.nextLong()
         p2p.sendStartGame(seed)

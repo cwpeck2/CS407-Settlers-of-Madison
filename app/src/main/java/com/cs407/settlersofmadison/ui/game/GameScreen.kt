@@ -21,7 +21,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
@@ -34,11 +36,11 @@ import com.cs407.settlersofmadison.domain.model.Resource
 import com.cs407.settlersofmadison.game.state.ResourceCard
 import com.cs407.settlersofmadison.game.state.ResourceCount
 import com.cs407.settlersofmadison.game.state.ResourceType
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import com.cs407.settlersofmadison.ui.lobby.ProfileSettings
+import com.cs407.settlersofmadison.ui.lobby.ProfileViewModel
 
 // Mode inside the trade dialog: player↔player vs Flamingo Run (4:1 bank trade)
 private enum class TradeMode { PLAYER, FLAMINGO }
@@ -48,14 +50,14 @@ private enum class TradeMode { PLAYER, FLAMINGO }
 fun GameScreen(
     localPlayerId: String,
     seed: Long, // CHANGED: Accept seed
-    onExit: () -> Unit
+    onExit: () -> Unit,
+    profileVm: ProfileViewModel
 ) {
     // CHANGED: Use factory to pass seed to VM
     val vm: GameViewModel = viewModel(factory = GameViewModelFactory(seed))
 
     val state by vm.state.collectAsState()
     val eventMessage by vm.eventText.collectAsState()
-    val snackbarHostState = remember { SnackbarHostState() }
 
     var showPauseDialog by remember { mutableStateOf(false) }
     var placingRoad by remember { mutableStateOf(false) }
@@ -63,12 +65,14 @@ fun GameScreen(
     var showTradeDialog by remember { mutableStateOf(false) }
     var boardScale by remember { mutableStateOf(1f) }
     var boardOffset by remember { mutableStateOf(Offset.Zero) }
-
+    val profile by profileVm.profile.collectAsState(initial = ProfileSettings())
     val boardTransformState = rememberTransformableState { zoomChange, panChange, _ ->
         val newScale = (boardScale * zoomChange).coerceIn(0.5f, 2.5f)  // tweak min/max as you like
         boardScale = newScale
         boardOffset += panChange
     }
+    val rerollOffer by vm.rerollOfferState.collectAsState()
+
     // When turn changes, cancel any pending build / trade modes.
     LaunchedEffect(state.turn) {
         placingRoad = false
@@ -80,21 +84,10 @@ fun GameScreen(
     val hasBlockingTrade = pendingTrade != null
 
     // Simple local user profile
-    val userProfile = remember(localPlayerId) {
-        UserProfile(
-            playerName = if (localPlayerId == "host") "Host" else "Guest",
-            playerId = localPlayerId
-        )
+    LaunchedEffect(localPlayerId, profile) {
+        vm.applyLocalProfile(localPlayerId, profile)
     }
-
     val isMyTurn = (state.turn == localPlayerId)
-
-    LaunchedEffect(eventMessage) {
-        eventMessage?.let {
-            snackbarHostState.showSnackbar(it)
-            vm.consumeEvent()
-        }
-    }
 
     Scaffold(
         topBar = {
@@ -111,8 +104,7 @@ fun GameScreen(
                     }
                 }
             )
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        }
     ) { padding ->
         Box(
             modifier = Modifier
@@ -138,16 +130,21 @@ fun GameScreen(
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // --- Header: whose turn / last roll ---
+                    // --- Header: whose turn / last roll / points ---
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         val currentPlayer = state.players[state.turn]
+                        val myState = state.players[localPlayerId]
                         Text(
                             "Turn: ${currentPlayer?.name ?: state.turn}",
                             style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            "You: ${myState?.points ?: 0} VP",
+                            style = MaterialTheme.typography.bodyMedium
                         )
                         Text("Last roll: ${state.lastRoll ?: "--"}")
                     }
@@ -168,7 +165,9 @@ fun GameScreen(
                             }
                     ) {
                         val robberMode =
-                            state.phase == GamePhase.ROBBER && state.turn == localPlayerId
+                            state.phase == GamePhase.ROBBER &&
+                                    state.turn == localPlayerId &&
+                                    state.robberDiscardsNeeded.isEmpty()
 
                         val rawRoadHighlights =
                             if (
@@ -326,10 +325,11 @@ fun GameScreen(
                         )
                     }
 
-                    // --- Local player's resource deck ("hand" of cards) ---
+                    // --- Local player's resource deck ("hand" of cards) + notifications ---
                     PlayerResourceDeck(
                         title = "Your Resources",
-                        player = localPlayer
+                        player = localPlayer,
+                        statusMessage = eventMessage
                     )
                 }
 
@@ -343,9 +343,30 @@ fun GameScreen(
                     hasRolledThisTurn = state.hasRolledThisTurn,
                     canStartTrade = vm.canStartTrade(localPlayerId, state),
                     hasBlockingTrade = hasBlockingTrade,
+                    // 🔽 new parameter:
+                    rerollPending = (rerollOffer?.playerId == localPlayerId),
                     onRollDice = { vm.onLocalRollDice(localPlayerId) },
                     onEndTurn = { vm.onLocalEndTurn(localPlayerId) },
                     onTrade = { showTradeDialog = true }
+                )
+
+                // --- DEV overlay: force a win for quick testing ---
+                DevTestOverlay(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp),
+                    onForceWin = { vm.devForceWinLocal(localPlayerId) }
+                )
+            }
+
+            // --- Win overlay (on top of everything) ---
+            val winnerId = state.winnerId
+            if (winnerId != null) {
+                val winner = state.players[winnerId]
+                WinOverlay(
+                    winnerName = winner?.name,
+                    isLocalWinner = (winnerId == localPlayerId),
+                    onExit = onExit
                 )
             }
         }
@@ -354,7 +375,7 @@ fun GameScreen(
     // Pause dialog
     PauseDialog(
         showDialog = showPauseDialog,
-        playerName = userProfile.playerName,
+        playerName = profile.nickname,
         onDismiss = { showPauseDialog = false },
         onQuit = {
             showPauseDialog = false
@@ -362,12 +383,39 @@ fun GameScreen(
         }
     )
 
+    // Capitol reroll dialog (when you have a reroll token)
+    if (rerollOffer != null && rerollOffer!!.playerId == localPlayerId) {
+        CapitolRerollDialog(
+            roll = rerollOffer!!.firstRoll,
+            onKeep = { vm.resolveReroll(keep = true) },
+            onReroll = { vm.resolveReroll(keep = false) }
+        )
+    }
+
+    // Robber discard dialog (after a 7, if you have >7 cards)
+    val localPlayerForRobber = state.players[localPlayerId]
+    val discardRequired = state.robberDiscardsNeeded[localPlayerId] ?: 0
+    if (state.phase == GamePhase.ROBBER &&
+        discardRequired > 0 &&
+        localPlayerForRobber != null
+    ) {
+        RobberDiscardDialog(
+            requiredDiscard = discardRequired,
+            localPlayer = localPlayerForRobber,
+            onConfirm = { discardMap ->
+                vm.onLocalRobberDiscard(localPlayerId, discardMap)
+            }
+        )
+    }
+
     // Trade dialog
     val localPlayerForDialog = state.players[localPlayerId]
     if (showTradeDialog && localPlayerForDialog != null) {
         TradeDialog(
             localPlayer = localPlayerForDialog,
             bankRateFor = { res -> vm.bankRateFor(localPlayerId, res) },
+            flamingoRateFor = { res -> vm.flamingoRateFor(localPlayerId, res) },
+            bascomTokens = vm.bascomTokensFor(localPlayerId),
             onSendOffer = { offer, request ->
                 vm.onLocalProposeTrade(localPlayerId, offer, request)
             },
@@ -380,11 +428,186 @@ fun GameScreen(
     }
 }
 
-// ... [Helper functions like PlayerResourceDeck, TradeDialog, etc. remain unchanged]
+@Composable
+private fun CapitolRerollDialog(
+    roll: Int,
+    onKeep: () -> Unit,
+    onReroll: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = { /* force a choice */ },
+        title = { Text("Capitol Reroll") },
+        text = {
+            Text(
+                "You rolled $roll.\n" +
+                        "Keep this result, or spend a Capitol token to reroll?"
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onReroll) {
+                Text("Reroll (spend token)")
+            }
+        },
+        dismissButton = {
+            Button(onClick = onKeep) {
+                Text("Keep $roll")
+            }
+        }
+    )
+}
+
+/**
+ * Robber discard selection when a 7 is rolled and you have >7 cards.
+ * Lets the player pick exactly [requiredDiscard] resources to lose.
+ */
+@Composable
+private fun RobberDiscardDialog(
+    requiredDiscard: Int,
+    localPlayer: PlayerState,
+    onConfirm: (Map<Resource, Int>) -> Unit
+) {
+    val resCounts = localPlayer.resources
+    val allResources = Resource.values().filter { it != Resource.LAKE }
+
+    var discardAmounts by remember { mutableStateOf<Map<Resource, Int>>(emptyMap()) }
+
+    fun setDiscard(res: Resource, value: Int) {
+        val max = resCounts[res] ?: 0
+        val clamped = value.coerceIn(0, max)
+        discardAmounts = discardAmounts.toMutableMap().also {
+            if (clamped == 0) it.remove(res) else it[res] = clamped
+        }
+    }
+
+    val totalSelected = discardAmounts.values.sum()
+    val canConfirm = (requiredDiscard > 0 && totalSelected == requiredDiscard)
+
+    AlertDialog(
+        onDismissRequest = { /* must discard; don't allow closing */ },
+        title = { Text("Discard Resources") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Badger Patrol rolled a 7.\n" +
+                            "You have too many resources – select exactly $requiredDiscard to discard.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                ResourceAmountRow(
+                    resources = allResources,
+                    amounts = discardAmounts,
+                    maxFor = { resCounts[it] ?: 0 },
+                    onChange = ::setDiscard
+                )
+
+                Text(
+                    "Selected: $totalSelected / $requiredDiscard",
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(discardAmounts) },
+                enabled = canConfirm
+            ) {
+                Text("Discard")
+            }
+        }
+    )
+}
+
+// DEV overlay: small panel to force a win quickly
+@Composable
+private fun DevTestOverlay(
+    modifier: Modifier = Modifier,
+    onForceWin: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .alpha(0.9f)
+            .background(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                shape = RoundedCornerShape(8.dp)
+            )
+            .padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            "DEV",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Button(
+            onClick = onForceWin,
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            Text(
+                "Win (10 pts)",
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+    }
+}
+
+@Composable
+private fun WinOverlay(
+    winnerName: String?,
+    isLocalWinner: Boolean,
+    onExit: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.6f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 32.dp, vertical = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = if (isLocalWinner) "You Win!" else "${winnerName ?: "Opponent"} Wins",
+                    style = MaterialTheme.typography.headlineMedium,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = if (isLocalWinner)
+                        "You reached 10 points.\nNice job, Badger!"
+                    else
+                        "Better luck next time.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                Button(onClick = onExit) {
+                    Text("Back to Menu")
+                }
+            }
+        }
+    }
+}
+
+// ----------------- Player hand + notifications -----------------
+
 @Composable
 private fun PlayerResourceDeck(
     title: String,
-    player: PlayerState?
+    player: PlayerState?,
+    statusMessage: String?
 ) {
     val cardHeight = 180.dp
     val cardWidth = 120.dp
@@ -399,7 +622,18 @@ private fun PlayerResourceDeck(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Text(title, style = MaterialTheme.typography.labelLarge)
+        val headerText = if (statusMessage.isNullOrBlank()) {
+            title
+        } else {
+            "$title – $statusMessage"
+        }
+
+        Text(
+            headerText,
+            style = MaterialTheme.typography.labelLarge,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
 
         if (player == null) {
             Box(
@@ -482,8 +716,9 @@ private fun PlayerResourceDeck(
         }
     }
 }
-// [Other helper functions omitted for brevity as they did not change] ...
-// TradeBanner, TradeDialog, BuildBar, Resource Helpers are identical to previous version.
+
+// ----------------- Trade banner & dialog -----------------
+
 @Composable
 private fun TradeBanner(
     pendingTrade: TradeOffer,
@@ -557,10 +792,12 @@ private fun TradeBanner(
 private fun TradeDialog(
     localPlayer: PlayerState,
     bankRateFor: (Resource) -> Int,
+    flamingoRateFor: (Resource) -> Int,
+    bascomTokens: Int,
     onSendOffer: (offer: Map<Resource, Int>, request: Map<Resource, Int>) -> Unit,
     onFlamingoTrade: (give: Resource, get: Resource) -> Unit,
     onDismiss: () -> Unit,
-    backgroundResId: Int? = null // you can keep this if you still want an inner bg image
+    backgroundResId: Int? = null
 ) {
     val resCounts = localPlayer.resources
     val allResources = Resource.values().filter { it != Resource.LAKE }
@@ -616,7 +853,7 @@ private fun TradeDialog(
             val (giveRes, giveCount) = flamingoGiveNonZero.entries.first()
             val (_, getCount) = flamingoGetNonZero.entries.first()
 
-            val required = bankRateFor(giveRes)      // 3 or 4 depending on ports
+            val required = flamingoRateFor(giveRes)      // 🔹 2, 3, or 4 depending on Bascom + ports
             val have = resCounts[giveRes] ?: 0
 
             giveCount == required && getCount == 1 && have >= required
@@ -631,15 +868,13 @@ private fun TradeDialog(
             Box(
                 modifier = Modifier.fillMaxWidth()
             ) {
-                // If you still want a faint art background *inside* the dialog,
-                // keep this. If you want it totally clean, just delete this `if`.
                 if (backgroundResId != null) {
                     Image(
                         painter = painterResource(id = backgroundResId),
                         contentDescription = null,
                         modifier = Modifier.matchParentSize(),
                         contentScale = ContentScale.Crop,
-                        alpha = 0.15f // made lighter so it doesn’t feel “transparent”
+                        alpha = 0.15f
                     )
                 }
 
@@ -690,11 +925,14 @@ private fun TradeDialog(
 
                     val titleText = when (mode) {
                         TradeMode.PLAYER -> "Offer to opponent"
-                        TradeMode.FLAMINGO ->
-                            if (hasAnyPortBonus)
-                                "Flamingo Run (3:1 / 4:1 – port bonus on some resources)"
-                            else
+                        TradeMode.FLAMINGO -> when {
+                            bascomTokens > 0 ->
+                                "Flamingo Run (next trade can be 2:1 from Bascom)"
+                            hasAnyPortBonus ->
+                                "Flamingo Run (3:1 / 4:1 – port bonus)"
+                            else ->
                                 "Flamingo Run (4:1)"
+                        }
                     }
                     Text(
                         titleText,
@@ -777,7 +1015,7 @@ private fun TradeDialog(
                 TradeMode.FLAMINGO -> {
                     if (flamingoGiveNonZero.size == 1) {
                         val giveRes = flamingoGiveNonZero.keys.first()
-                        val rate = bankRateFor(giveRes)
+                        val rate = flamingoRateFor(giveRes)
                         "Flamingo Run ($rate → 1)"
                     } else {
                         "Flamingo Run"
@@ -813,6 +1051,9 @@ private fun TradeDialog(
         }
     )
 }
+
+// ----------------- Turn buttons -----------------
+
 @Composable
 private fun TurnActionButtons(
     modifier: Modifier = Modifier,
@@ -820,16 +1061,24 @@ private fun TurnActionButtons(
     phase: GamePhase,
     hasRolledThisTurn: Boolean,
     canStartTrade: Boolean,
+    rerollPending: Boolean,
     hasBlockingTrade: Boolean,
     onRollDice: () -> Unit,
     onEndTurn: () -> Unit,
     onTrade: () -> Unit
 ) {
     val canRoll =
-        isMyTurn && phase == GamePhase.PLAY && !hasRolledThisTurn && !hasBlockingTrade
-    val canEnd =
-        isMyTurn && phase == GamePhase.PLAY && hasRolledThisTurn && !hasBlockingTrade
+        isMyTurn &&
+                phase == GamePhase.PLAY &&
+                !hasRolledThisTurn &&
+                !hasBlockingTrade &&
+                !rerollPending
 
+    val canEnd =
+        isMyTurn &&
+                phase == GamePhase.PLAY &&
+                hasRolledThisTurn &&
+                !hasBlockingTrade
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.End,
@@ -864,6 +1113,7 @@ private fun TurnActionButtons(
         )
     }
 }
+
 @Composable
 private fun ImageSquareButton(
     modifier: Modifier = Modifier,
@@ -885,7 +1135,6 @@ private fun ImageSquareButton(
         modifier = modifier
             .size(size)
             .clip(shape)
-            // 🔹 ONLY an outline now – no background fill.
             .border(borderWidth, borderColor, shape)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center
@@ -894,12 +1143,152 @@ private fun ImageSquareButton(
             painter = painterResource(id = painterResId),
             contentDescription = contentDescription,
             modifier = Modifier
-                .fillMaxSize(0.8f)         // adjust if you want bigger/smaller
-                .alpha(if (enabled) 1f else 0.4f),  // dim when disabled
-            contentScale = ContentScale.Fit        // show whole PNG, no crop
+                .fillMaxSize(0.8f)
+                .alpha(if (enabled) 1f else 0.4f),
+            contentScale = ContentScale.Fit
         )
     }
 }
+
+// ----------------- Build bar -----------------
+
+@Composable
+private fun BuildBar(
+    canBuildRoad: Boolean,
+    placingRoad: Boolean,
+    onToggleRoadPlacement: () -> Unit,
+    canBuildSettlement: Boolean,
+    placingSettlement: Boolean,
+    onToggleSettlementPlacement: () -> Unit,
+    // optional extras so your existing call still compiles
+    canBuildCity: Boolean = false,
+    placingCity: Boolean = false,
+    onToggleCityPlacement: () -> Unit = {},
+    canBuyDevCard: Boolean = false,
+    onBuyDevCard: () -> Unit = {}
+) {
+    if (!canBuildRoad && !canBuildSettlement && !canBuildCity && !canBuyDevCard) return
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Road
+        if (canBuildRoad) {
+            GameActionIconButton(
+                iconRes = R.drawable.ic_road,
+                contentDescription =
+                    if (placingRoad) "Tap a highlighted edge to place a road"
+                    else "Build road",
+                enabled = true,
+                modifier = Modifier.size(40.dp),
+                onClick = onToggleRoadPlacement
+            )
+        }
+
+        // Settlement
+        if (canBuildSettlement) {
+            GameActionIconButton(
+                iconRes = R.drawable.ic_settle,
+                contentDescription =
+                    if (placingSettlement) "Tap a highlighted corner to place a settlement"
+                    else "Build settlement",
+                enabled = true,
+                modifier = Modifier.size(40.dp),
+                onClick = onToggleSettlementPlacement
+            )
+        }
+
+        // City (if/when you hook it up)
+        if (canBuildCity) {
+            GameActionIconButton(
+                iconRes = R.drawable.ic_city,
+                contentDescription =
+                    if (placingCity) "Tap a highlighted corner to upgrade to a city"
+                    else "Build city",
+                enabled = true,
+                modifier = Modifier.size(40.dp),
+                onClick = onToggleCityPlacement
+            )
+        }
+
+        // Dev card (if/when you hook it up)
+        if (canBuyDevCard) {
+            GameActionIconButton(
+                iconRes = R.drawable.ic_dev,
+                contentDescription = "Buy development card",
+                enabled = true,
+                modifier = Modifier.size(40.dp),
+                onClick = onBuyDevCard
+            )
+        }
+    }
+}
+
+@Composable
+private fun GameActionIconButton(
+    iconRes: Int,
+    contentDescription: String,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    OutlinedIconButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (enabled) Color.Red.copy(alpha = 0.7f)
+            else Color.White.copy(alpha = 0.3f)
+        ),
+        colors = IconButtonDefaults.outlinedIconButtonColors(
+            contentColor = Color.White
+        )
+    ) {
+        Image(
+            painter = painterResource(id = iconRes),
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(6.dp),
+            contentScale = ContentScale.Fit
+        )
+    }
+}
+
+// ----------------- Helpers -----------------
+
+private fun Resource.displayName(): String =
+    when (this) {
+        Resource.CONCRETE    -> "Concrete"
+        Resource.STUDENT     -> "Student"
+        Resource.BUCKY       -> "Bucky"
+        Resource.CHAIR       -> "Union Chair"
+        Resource.CHEESE_CURD -> "Cheese Curds"
+        Resource.LAKE        -> "Lake"
+    }
+
+private fun Resource.toResourceType(): ResourceType =
+    when (this) {
+        Resource.CONCRETE    -> ResourceType.CONCRETE
+        Resource.STUDENT     -> ResourceType.STUDENT
+        Resource.BUCKY       -> ResourceType.BUCKY
+        Resource.CHAIR       -> ResourceType.CHAIR
+        Resource.CHEESE_CURD -> ResourceType.CHEESE_CURD
+        Resource.LAKE        -> error("WATER should not be converted to ResourceType")
+    }
+
+private fun Map<Resource, Int>.describe(): String =
+    entries
+        .filter { it.value > 0 }
+        .joinToString { "${it.value} ${it.key.displayName()}" }
+        .ifEmpty { "nothing" }
+
 @Composable
 private fun ResourceAmountRow(
     resources: List<Resource>,
@@ -958,136 +1347,3 @@ private fun ResourceAmountRow(
         }
     }
 }
-
-@Composable
-private fun BuildBar(
-    canBuildRoad: Boolean,
-    placingRoad: Boolean,
-    onToggleRoadPlacement: () -> Unit,
-    canBuildSettlement: Boolean,
-    placingSettlement: Boolean,
-    onToggleSettlementPlacement: () -> Unit,
-    // optional extras so your existing call still compiles
-    canBuildCity: Boolean = false,
-    placingCity: Boolean = false,
-    onToggleCityPlacement: () -> Unit = {},
-    canBuyDevCard: Boolean = false,
-    onBuyDevCard: () -> Unit = {}
-) {
-    if (!canBuildRoad && !canBuildSettlement && !canBuildCity && !canBuyDevCard) return
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // Road
-        if (canBuildRoad) {
-            GameActionIconButton(
-                iconRes = R.drawable.ic_road,          // <-- your road PNG
-                contentDescription =
-                    if (placingRoad) "Tap a highlighted edge to place a road"
-                    else "Build road",
-                enabled = true,
-                modifier = Modifier.size(40.dp),
-                onClick = onToggleRoadPlacement
-            )
-        }
-
-        // Settlement
-        if (canBuildSettlement) {
-            GameActionIconButton(
-                iconRes = R.drawable.ic_settle,   // <-- your settlement PNG
-                contentDescription =
-                    if (placingSettlement) "Tap a highlighted corner to place a settlement"
-                    else "Build settlement",
-                enabled = true,
-                modifier = Modifier.size(40.dp),
-                onClick = onToggleSettlementPlacement
-            )
-        }
-
-        // City (if/when you hook it up)
-        if (canBuildCity) {
-            GameActionIconButton(
-                iconRes = R.drawable.ic_city,         // <-- your city PNG
-                contentDescription =
-                    if (placingCity) "Tap a highlighted corner to upgrade to a city"
-                    else "Build city",
-                enabled = true,
-                modifier = Modifier.size(40.dp),
-                onClick = onToggleCityPlacement
-            )
-        }
-
-        // Dev card (if/when you hook it up)
-        if (canBuyDevCard) {
-            GameActionIconButton(
-                iconRes = R.drawable.ic_dev,     // <-- your dev-card PNG
-                contentDescription = "Buy development card",
-                enabled = true,
-                modifier = Modifier.size(40.dp),
-                onClick = onBuyDevCard
-            )
-        }
-    }
-}
-@Composable
-private fun GameActionIconButton(
-    iconRes: Int,
-    contentDescription: String,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    OutlinedIconButton(
-        onClick = onClick,
-        modifier = modifier,
-        enabled = enabled,
-        shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (enabled) Color.Red.copy(alpha = 0.7f)
-            else Color.White.copy(alpha = 0.3f)
-        ),
-        colors = IconButtonDefaults.outlinedIconButtonColors(
-            contentColor = Color.White
-        )
-    ) {
-        Image(
-            painter = painterResource(id = iconRes),
-            contentDescription = contentDescription,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(6.dp),
-            contentScale = ContentScale.Fit  // shows full PNG, not zoomed/cropped
-        )
-    }
-}
-private fun Resource.displayName(): String =
-    when (this) {
-        Resource.CONCRETE    -> "Concrete"
-        Resource.STUDENT     -> "Student"
-        Resource.BUCKY       -> "Bucky"
-        Resource.CHAIR       -> "Union Chair"
-        Resource.CHEESE_CURD -> "Cheese Curds"
-        Resource.LAKE        -> "Lake"
-    }
-
-private fun Resource.toResourceType(): ResourceType =
-    when (this) {
-        Resource.CONCRETE    -> ResourceType.CONCRETE
-        Resource.STUDENT     -> ResourceType.STUDENT
-        Resource.BUCKY       -> ResourceType.BUCKY
-        Resource.CHAIR       -> ResourceType.CHAIR
-        Resource.CHEESE_CURD -> ResourceType.CHEESE_CURD
-        Resource.LAKE        -> error("WATER should not be converted to ResourceType")
-    }
-
-private fun Map<Resource, Int>.describe(): String =
-    entries
-        .filter { it.value > 0 }
-        .joinToString { "${it.value} ${it.key.displayName()}" }
-        .ifEmpty { "nothing" }

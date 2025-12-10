@@ -357,7 +357,7 @@ fun HexBoard(
 
             // --- Roads + Settlements ---
             roomState.players.values.forEach { player ->
-                val color = if (player.id == currentPlayerId) Color.Red else Color.Gray
+                val color = colorForPlayer(roomState, player.id)
 
                 // Roads
                 player.roads.forEach { eKey ->
@@ -615,7 +615,16 @@ private fun distanceToSegmentSquared(p: Offset, a: Offset, b: Offset): Float {
 
     return dx * dx + dy * dy
 }
+private fun colorForPlayer(roomState: RoomState, playerId: String): Color {
+    val p = roomState.players[playerId]
 
+    // Prefer the profile color if set
+    val fromProfile = p?.color?.let { Color(it) }
+    if (fromProfile != null) return fromProfile
+
+    // Fallback: deterministic defaults if no profile color
+    return if (playerId == "host") Color(0xFFE53935) else Color(0xFFB0BEC5)
+}
 private fun findNearestTile(
     tap: Offset,
     tileCenters: Map<HexCoord, Offset>,

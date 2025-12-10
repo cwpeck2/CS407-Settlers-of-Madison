@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cs407.settlersofmadison.data.p2p.P2PHolder
 import com.cs407.settlersofmadison.domain.model.*
+import com.cs407.settlersofmadison.ui.lobby.ProfileSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -30,8 +31,12 @@ data class PlayerState(
     val name: String,
     val resources: Map<Resource, Int> = emptyMap(),
     val settlements: Set<VertexKey> = emptySet(),
+    val cities: Set<VertexKey> = emptySet(),       // NEW
     val roads: Set<EdgeKey> = emptySet(),
-    val points: Int = 0
+    val bonusPoints: Int = 0,                      // for Badger Spirit etc later
+    val points: Int = 0,
+    val color: Long? = null,           // ARGB long (preferred color)
+    val avatarUri: String? = null
 )
 
 data class RoomState(
@@ -43,6 +48,8 @@ data class RoomState(
     val hasRolledThisTurn: Boolean = false,
     val robberCoord: HexCoord? = null,
     val robberMoverId: String? = null,
+    // playerId -> how many cards they still must discard after a 7
+    val robberDiscardsNeeded: Map<String, Int> = emptyMap(),
     val startingPlayerId: String? = null,
     val pendingTrade: TradeOffer? = null,
     val setupIndex: Int = 0,
@@ -50,10 +57,25 @@ data class RoomState(
     val setupPlacedRoad: Boolean = false,
     val setupCurrentSettlementVertex: VertexKey? = null,
     val portVertices: Set<VertexKey> = emptySet(),
+    val bascomTradeTokens: Map<String, Int> = emptyMap(),
+
+    // Capitol lvl1: reroll tokens (max 1 for now; lvl2 will allow 2 once cities exist)
+    val capitolRerollTokens: Map<String, Int> = emptyMap(),
+
+    // Engineering lvl1: dev-card boost active for this turn (no dev cards yet, just flag)
+    val engineeringBoostThisTurn: Set<String> = emptySet(),
+    val winnerId: String? = null
+)
+
+data class RerollOffer(
+    val playerId: String,
+    val firstRoll: Int
 )
 
 // CHANGED: Accept seed in constructor
 class GameViewModel(private val seed: Long) : ViewModel() {
+    val rerollOffer = MutableStateFlow<RerollOffer?>(null)
+    val rerollOfferState: StateFlow<RerollOffer?> = rerollOffer
 
     private val HEX_DIRECTIONS = listOf(
         HexCoord(1, 0),
@@ -95,6 +117,28 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             }
         }
     }
+
+    private val WIN_POINTS = 5
+
+    // Recompute VP for a single player
+    private fun PlayerState.withUpdatedPoints(): PlayerState {
+        val total = settlements.size + cities.size * 2 + bonusPoints
+        return copy(points = total)
+    }
+
+    // Recompute points for everyone and check for a winner
+    private fun RoomState.withUpdatedPlayers(
+        newPlayersRaw: Map<String, PlayerState>
+    ): RoomState {
+        val newPlayers = newPlayersRaw.mapValues { (_, p) -> p.withUpdatedPoints() }
+        val winnerEntry = newPlayers.entries.firstOrNull { it.value.points >= WIN_POINTS }
+        return if (winnerEntry != null) {
+            copy(players = newPlayers, winnerId = winnerEntry.key)
+        } else {
+            copy(players = newPlayers)
+        }
+    }
+
     private fun bankRateFor(player: PlayerState, res: Resource): Int {
         // Player gets 3:1 ONLY if they have a settlement on a port
         // whose resource matches `res`.
@@ -104,12 +148,30 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         return if (hasSpecificPort) 3 else 4    // resource-specific, not global
     }
 
+    fun bascomTokensFor(playerId: String): Int =
+        _state.value.bascomTradeTokens[playerId] ?: 0
+
+    fun flamingoRateFor(playerId: String, res: Resource): Int {
+        val rs = _state.value
+        val player = rs.players[playerId] ?: return 4
+        val tokens = rs.bascomTradeTokens[playerId] ?: 0
+        val baseRate = bankRateFor(player, res)
+        return if (tokens > 0) 2 else baseRate
+    }
+
+    // Does this player currently have a Bascom "super trade" available?
+    fun hasBascomPower(playerId: String): Boolean {
+        val rs = _state.value
+        return (rs.bascomTradeTokens[playerId] ?: 0) > 0
+    }
+
     // Convenience wrapper for UI
     fun bankRateFor(playerId: String, res: Resource): Int {
         val rs = _state.value
         val player = rs.players[playerId] ?: return 4
         return bankRateFor(player, res)
     }
+
     private fun assignPortResources(portVertices: Set<VertexKey>): Map<VertexKey, Resource> {
         if (portVertices.isEmpty()) return emptyMap()
 
@@ -132,9 +194,11 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         }
         return result
     }
+
     // Exposed to UI for drawing
     val portResources: Map<VertexKey, Resource>
         get() = portResourcesInternal
+
     // Starting player still random off the seed
     private val startingPlayerId: String =
         if (Random(seed).nextBoolean()) "host" else "guest"
@@ -160,6 +224,31 @@ class GameViewModel(private val seed: Long) : ViewModel() {
     )
     val state: StateFlow<RoomState> = _state
 
+    fun applyLocalProfile(playerId: String, profile: ProfileSettings) {
+        // Update local state
+        mutate { rs ->
+            val players = rs.players.toMutableMap()
+            val p = players[playerId] ?: return@mutate rs
+
+            val nickname = profile.nickname.takeIf { it.isNotBlank() } ?: p.name
+            val colorLong = profile.preferredColor
+            val avatar = profile.avatarUri
+
+            players[playerId] = p.copy(
+                name = nickname,
+                color = colorLong,
+                avatarUri = avatar
+            )
+            rs.copy(players = players)
+        }
+
+        // Broadcast name + color to peer (avatarUri is local-only and wouldn’t work cross-device)
+        val safeNickname = (profile.nickname ?: "").replace(":", " ")
+        val colorStr = (profile.preferredColor ?: -1L).toString()
+        p2p.send("GAME:PROFILE:$playerId:$safeNickname:$colorStr")
+    }
+
+    // Status / notification text (now shown near "Your Resources" instead of snackbar)
     val eventText = MutableStateFlow<String?>(null)
 
     init {
@@ -171,8 +260,9 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             }
         }
     }
+
     init {
-        Log.d("GameVM", "Creating GameViewModel with seed=$seed, role board=${startingPlayerId}")
+        Log.d("GameVM", "Creating GameViewModel with seed=$seed, role board=$startingPlayerId")
     }
 
     private fun ringOf(coord: HexCoord): Int {
@@ -181,18 +271,33 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         val s = -q - r
         return maxOf(abs(q), abs(r), abs(s))
     }
+
     private fun playerHasPort(player: PlayerState, rs: RoomState): Boolean {
         if (rs.portVertices.isEmpty()) return false
-        return player.settlements.any { it in rs.portVertices }
+        return (player.settlements + player.cities).any { it in rs.portVertices }
     }
+
     private fun mutate(block: (RoomState) -> RoomState) {
         _state.value = block(_state.value)
     }
 
     private val buildCosts: Map<BuildType, Map<Resource, Int>> = mapOf(
-        BuildType.ROAD to mapOf(Resource.CONCRETE to 1, Resource.BUCKY to 1),
-        BuildType.SETTLEMENT to mapOf(Resource.CONCRETE to 1, Resource.STUDENT to 1, Resource.CHAIR to 1, Resource.CHEESE_CURD to 1)
+        BuildType.ROAD to mapOf(
+            Resource.CONCRETE to 1,
+            Resource.BUCKY to 1
+        ),
+        BuildType.SETTLEMENT to mapOf(
+            Resource.CONCRETE to 1,
+            Resource.STUDENT to 1,
+            Resource.CHAIR to 1,
+            Resource.CHEESE_CURD to 1
+        ),
+        BuildType.CITY to mapOf(                           // NEW
+            Resource.STUDENT to 2,
+            Resource.CHAIR to 3
+        )
     )
+
     private val tradableResources: List<Resource> = listOf(
         Resource.CONCRETE,
         Resource.STUDENT,
@@ -258,7 +363,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
     private fun isAdjacentToSettlement(rs: RoomState, v: VertexKey): Boolean {
         val neighbors = adjacentVerticesOf(v)
         return rs.players.values.any { player ->
-            player.settlements.any { it in neighbors }
+            (player.settlements + player.cities).any { it in neighbors }
         }
     }
 
@@ -325,7 +430,11 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 players[playerId] = updatedPlayer
                 eventText.value = "${updatedPlayer.name} placed a settlement."
 
-                val newState = rs.copy(players = players, setupPlacedSettlement = true, setupCurrentSettlementVertex = v)
+                val newState = rs.copy(
+                    players = players,
+                    setupPlacedSettlement = true,
+                    setupCurrentSettlementVertex = v
+                )
                 debugDumpEverything()
                 return@mutate newState
             }
@@ -348,7 +457,10 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 ?.mapNotNull { coord -> boardGraph.tilesByCoord[coord] }
                 ?.sortedWith(compareBy<Tile> { it.coord.q }.thenBy { it.coord.r })
                 ?: emptyList()
-            val touchingDesc = if (touchingTiles.isEmpty()) "no tiles" else touchingTiles.joinToString { "${it.number}-${it.resource.name}" }
+            val touchingDesc =
+                if (touchingTiles.isEmpty()) "no tiles"
+                else touchingTiles.joinToString { "${it.number}-${it.resource.name}" }
+
             eventText.value = "${updatedPlayer.name} built a dorm touching: $touchingDesc"
             val newState = rs.copy(players = players)
             debugDumpEverything()
@@ -448,7 +560,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         if (rs.pendingTrade != null) return emptySet()
         val me = rs.players[playerId] ?: return emptySet()
         if (!canAfford(me, BuildType.SETTLEMENT)) return emptySet()
-        val occupied = rs.players.values.flatMapTo(mutableSetOf()) { it.settlements }
+        val occupied = rs.players.values.flatMapTo(mutableSetOf()) { it.settlements + it.cities }
         val result = mutableSetOf<VertexKey>()
         for ((vKey, _) in boardGraph.vertices) {
             if (vKey in occupied) continue
@@ -466,55 +578,105 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             if (rs.phase != GamePhase.PLAY) return@mutate rs
 
             val players = rs.players.toMutableMap()
+            val capitolTokens = rs.capitolRerollTokens.toMutableMap()
+
+            val capitolTiles = boardGraph.tiles.filter {
+                it.landmark == Landmark.CAPITOL && it.number == roll
+            }
+
+            if (capitolTiles.isNotEmpty()) {
+                // For each player, check if they have a settlement touching any Capitol tile
+                rs.players.forEach { (pid, pState) ->
+                    val controlsCapitol = pState.settlements.any { vKey ->
+                        val vertex = boardGraph.vertices[vKey] ?: return@any false
+                        vertex.tileCoords.any { coord ->
+                            capitolTiles.any { it.coord == coord }
+                        }
+                    }
+
+                    if (controlsCapitol) {
+                        val current = capitolTokens[pid] ?: 0
+                        val maxTokens = 1   // Lvl 1 now; later we bump to 2 if city
+                        if (current < maxTokens) {
+                            capitolTokens[pid] = current + 1
+                        }
+                    }
+                }
+            }
             val gainsByPlayerName = mutableMapOf<String, MutableList<Resource>>()
             val robbedCoord = rs.robberCoord
 
-            fun addGain(player: PlayerState, resource: Resource, newRes: MutableMap<Resource, Int>) {
-                newRes[resource] = (newRes[resource] ?: 0) + 1
+            // Copies of landmark state we’ll update
+            val bascomTokens = rs.bascomTradeTokens.toMutableMap()
+            val engineeringBoost = rs.engineeringBoostThisTurn.toMutableSet()
+
+            fun addGain(playerName: String, res: Resource, bag: MutableMap<Resource, Int>) {
+                bag[res] = (bag[res] ?: 0) + 1
                 gainsByPlayerName
-                    .getOrPut(player.name) { mutableListOf() }
-                    .add(resource)
+                    .getOrPut(playerName) { mutableListOf() }
+                    .add(res)
             }
 
             for ((id, player) in players) {
                 var gained = 0
                 val newRes = player.resources.toMutableMap()
 
-                // For each settlement the player has...
                 for (v in player.settlements) {
                     val vertex = boardGraph.vertices[v] ?: continue
 
-                    // ...and for each tile touching that vertex...
                     for (coord in vertex.tileCoords) {
                         val tile = boardGraph.tilesByCoord[coord] ?: continue
 
-                        // Robber blocks the entire tile (base + landmark bonus)
+                        // Robber blocks entire tile
                         if (robbedCoord != null && tile.coord == robbedCoord) continue
 
-                        // Only numbered, non-lake tiles pay out
+                        // Only numbered, non-lake tiles produce
                         if (tile.number == roll && tile.resource != Resource.LAKE) {
-                            // Base resource from the tile
-                            addGain(player, tile.resource, newRes)
+                            // Base resource
+                            addGain(player.name, tile.resource, newRes)
                             gained++
 
-                            // Landmark bonus on that tile, if any
+                            // Landmark behavior (Level 1 only for now)
                             when (tile.landmark) {
                                 Landmark.BASCOM_HILL -> {
-                                    addGain(player, Resource.STUDENT, newRes)
-                                    gained++
+                                    // L1: gain super-trade token (one 2:1 Flamingo)
+                                    bascomTokens[id] = (bascomTokens[id] ?: 0) + 1
                                 }
+
                                 Landmark.CAPITOL -> {
-                                    addGain(player, Resource.CONCRETE, newRes)
-                                    gained++
+                                    // L1: gain one reroll token (max 1 for now; L2 will allow 2)
+                                    val current = capitolTokens[id] ?: 0
+                                    val maxForLevel = 1 // TODO: if city on Capitol, make this 2
+                                    if (current < maxForLevel) {
+                                        capitolTokens[id] = current + 1
+                                    }
                                 }
+
                                 Landmark.MEMORIAL_UNION -> {
-                                    addGain(player, Resource.CHEESE_CURD, newRes)
-                                    gained++
+                                    // L1: swap one of your resources with a random resource (1:1)
+                                    val flat = mutableListOf<Resource>()
+                                    newRes.forEach { (res, count) ->
+                                        repeat(count) { flat.add(res) }
+                                    }
+                                    if (flat.isNotEmpty()) {
+                                        val giveRes = flat.random()
+                                        val currentCount = newRes[giveRes] ?: 0
+                                        if (currentCount > 0) {
+                                            newRes[giveRes] = currentCount - 1
+                                            if (newRes[giveRes] == 0) newRes.remove(giveRes)
+
+                                            val getRes = tradableResources.random()
+                                            addGain(player.name, getRes, newRes)
+                                        }
+                                    }
                                 }
+
                                 Landmark.ENGINEERING_HALL -> {
-                                    addGain(player, Resource.BUCKY, newRes)
-                                    gained++
+                                    // L1: dev cards played this turn should give +1 random resource.
+                                    // We just remember the flag for this turn.
+                                    engineeringBoost.add(id)
                                 }
+
                                 null -> Unit
                             }
                         }
@@ -532,21 +694,26 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 } else {
                     "Rolled $roll → " +
                             gainsByPlayerName.entries.joinToString(" | ") { (name, list) ->
-                                val summary = list
-                                    .groupingBy { it }
-                                    .eachCount()
-                                    .entries
-                                    .joinToString { (res, count) ->
-                                        val prettyName =
-                                            res.name.lowercase().replaceFirstChar { it.uppercaseChar() }
-                                        "$count $prettyName"
+                                val summary = list.groupingBy { it }.eachCount()
+                                    .entries.joinToString { (res, count) ->
+                                        val pretty = res.name.lowercase()
+                                            .replaceFirstChar { it.uppercaseChar() }
+                                        "$count $pretty"
                                     }
                                 "$name: $summary"
                             }
                 }
 
             eventText.value = msg
-            rs.copy(players = players, lastRoll = roll, hasRolledThisTurn = true)
+
+            rs.copy(
+                players = players,
+                lastRoll = roll,
+                hasRolledThisTurn = true,
+                bascomTradeTokens = bascomTokens,
+                capitolRerollTokens = capitolTokens,
+                engineeringBoostThisTurn = engineeringBoost
+            )
         }
     }
 
@@ -559,11 +726,95 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         }
     }
 
+    /**
+     * Called whenever a 7 is rolled (normal or after reroll).
+     * Sets the game into ROBBER phase and computes discard requirements.
+     */
     private fun startRobberPhase(playerId: String) {
         mutate { rs ->
-            eventText.value = "${rs.players[playerId]?.name ?: playerId} rolled 7. Tap a tile to move the Badger Patrol."
-            rs.copy(phase = GamePhase.ROBBER, lastRoll = 7, robberMoverId = playerId, hasRolledThisTurn = true)
+            // Any player with >7 resources must discard half (rounded UP)
+            val discardsNeeded = mutableMapOf<String, Int>()
+            for ((pid, pState) in rs.players) {
+                val total = pState.resources.values.sum()
+                if (total > 7) {
+                    val toDiscard = (total + 1) / 2  // rounded up
+                    if (toDiscard > 0) {
+                        discardsNeeded[pid] = toDiscard
+                    }
+                }
+            }
+
+            val moverName = rs.players[playerId]?.name ?: playerId
+
+            eventText.value =
+                if (discardsNeeded.isNotEmpty()) {
+                    "Badger Patrol! Players with >7 resources must discard before $moverName moves it."
+                } else {
+                    "$moverName rolled 7. Tap a tile to move the Badger Patrol."
+                }
+
+            rs.copy(
+                phase = GamePhase.ROBBER,
+                lastRoll = 7,
+                robberMoverId = playerId,
+                hasRolledThisTurn = true,
+                robberDiscardsNeeded = discardsNeeded
+            )
         }
+    }
+
+    /**
+     * Apply a robber discard for [playerId].
+     * This is used both locally and when we receive it over P2P.
+     */
+    private fun applyRobberDiscard(
+        rs: RoomState,
+        playerId: String,
+        discard: Map<Resource, Int>
+    ): RoomState {
+        val need = rs.robberDiscardsNeeded[playerId] ?: return rs
+        val total = discard.values.sum()
+        if (total <= 0) return rs
+
+        // Strict: must discard exactly the required amount
+        if (total != need) {
+            Log.w("GameVM", "Robber discard mismatch: expected $need, got $total for $playerId")
+            return rs
+        }
+
+        val player = rs.players[playerId] ?: return rs
+
+        // Validate the player actually has enough of each resource
+        for ((res, count) in discard) {
+            val have = player.resources[res] ?: 0
+            if (count < 0 || count > have) {
+                Log.w("GameVM", "Invalid discard: $playerId tries to discard $count of $res, has $have")
+                return rs
+            }
+        }
+
+        val newRes = player.resources.toMutableMap()
+        for ((res, count) in discard) {
+            if (count == 0) continue
+            val have = newRes[res] ?: 0
+            val newCount = have - count
+            if (newCount > 0) newRes[res] = newCount else newRes.remove(res)
+        }
+
+        val updatedPlayer = player.copy(resources = newRes)
+        val newPlayers = rs.players.toMutableMap()
+        newPlayers[playerId] = updatedPlayer
+
+        val newDiscardMap = rs.robberDiscardsNeeded.toMutableMap()
+        newDiscardMap.remove(playerId)
+
+        eventText.value =
+            "${updatedPlayer.name} discarded $total resources due to the Badger Patrol."
+
+        return rs.copy(
+            players = newPlayers,
+            robberDiscardsNeeded = newDiscardMap
+        )
     }
 
     private fun placeRobberInternal(playerId: String, coord: HexCoord) {
@@ -571,7 +822,12 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             if (rs.phase != GamePhase.ROBBER || rs.turn != playerId || rs.robberMoverId != playerId) return@mutate rs
             if (rs.robberCoord != null && rs.robberCoord == coord) return@mutate rs
             eventText.value = "${rs.players[playerId]?.name ?: playerId} moved the Badger Patrol."
-            rs.copy(robberCoord = coord, phase = GamePhase.PLAY, robberMoverId = null, hasRolledThisTurn = true)
+            rs.copy(
+                robberCoord = coord,
+                phase = GamePhase.PLAY,
+                robberMoverId = null,
+                hasRolledThisTurn = true
+            )
         }
     }
 
@@ -587,6 +843,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         val players = rs.players.toMutableMap()
         val from = players[trade.fromId] ?: return rs
         val to = players[trade.toId] ?: return rs
+
         fun applyDelta(player: PlayerState, delta: Map<Resource, Int>): PlayerState {
             val newRes = player.resources.toMutableMap()
             for ((res, d) in delta) {
@@ -595,6 +852,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             }
             return player.copy(resources = newRes)
         }
+
         val fromDelta = mutableMapOf<Resource, Int>()
         val toDelta = mutableMapOf<Resource, Int>()
         for (res in resourceOrder) {
@@ -618,17 +876,39 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             val players = rs.players.toMutableMap()
             val me = players[playerId] ?: return@mutate rs
 
-            val rate = bankRateFor(me, give)  // 3 or 4 depending on ports
+            val baseRate = bankRateFor(me, give)   // 3 or 4 from ports
+            val bascomTokens = rs.bascomTradeTokens.toMutableMap()
+            val tokenCount = bascomTokens[playerId] ?: 0
+
+            // If you have a Bascom token, this Flamingo can be 2:1
+            val effectiveRate = if (tokenCount > 0) 2 else baseRate
+
             val have = me.resources[give] ?: 0
-            if (have < rate) return@mutate rs
+            if (have < effectiveRate) return@mutate rs
 
             val newRes = me.resources.toMutableMap()
-            newRes[give] = have - rate
+            newRes[give] = have - effectiveRate
             newRes[get] = (newRes[get] ?: 0) + 1
 
+            // If we used a Bascom token (2:1), consume one
+            if (tokenCount > 0 && effectiveRate == 2) {
+                val remaining = tokenCount - 1
+                if (remaining > 0) bascomTokens[playerId] = remaining
+                else bascomTokens.remove(playerId)
+            }
+
             players[playerId] = me.copy(resources = newRes)
-            eventText.value = "Flamingo Run trade complete (${rate}:1 ${give.name.lowercase()})."
-            rs.copy(players = players)
+
+            eventText.value =
+                if (effectiveRate == 2)
+                    "Bascom Hill super-trade! Flamingo Run 2:1 ${give.name.lowercase()}."
+                else
+                    "Flamingo Run trade complete (${effectiveRate}:1 ${give.name.lowercase()})."
+
+            rs.copy(
+                players = players,
+                bascomTradeTokens = bascomTokens
+            )
         }
     }
 
@@ -644,6 +924,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 val corner = parts[4].toIntOrNull() ?: return
                 tryPlaceSettlement(playerId, VertexKey(q, r, corner))
             }
+
             "ROAD" -> {
                 if (parts.size != 5) return
                 val playerId = parts[1]
@@ -652,13 +933,16 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 val edgeIndex = parts[4].toIntOrNull() ?: return
                 tryPlaceRoad(playerId, EdgeKey(q, r, edgeIndex))
             }
+
             "ROLL" -> {
                 if (parts.size != 3) return
                 val playerId = parts[1]
                 val roll = parts[2].toIntOrNull() ?: return
                 if (roll == 7) startRobberPhase(playerId) else applyRollResult(roll)
             }
+
             "ENDTURN" -> internalEndTurn()
+
             "ROBBER" -> {
                 if (parts.size != 4) return
                 val playerId = parts[1]
@@ -666,6 +950,14 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 val r = parts[3].toIntOrNull() ?: return
                 placeRobberInternal(playerId, HexCoord(q, r))
             }
+
+            "ROBBER_DISCARD" -> {
+                if (parts.size != 3) return
+                val playerId = parts[1]
+                val discard = decodeResourceMap(parts[2])
+                mutate { rs -> applyRobberDiscard(rs, playerId, discard) }
+            }
+
             "TRADE_OFFER" -> {
                 if (parts.size != 5) return
                 val fromId = parts[1]
@@ -674,18 +966,69 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 val request = decodeResourceMap(parts[4])
                 mutate { rs -> rs.copy(pendingTrade = TradeOffer(fromId, toId, offer, request)) }
             }
+
             "TRADE_ACCEPT" -> {
                 val trade = _state.value.pendingTrade ?: return
                 mutate { rs -> applyTrade(rs, trade) }
             }
-            "TRADE_REJECT" -> mutate { rs -> eventText.value = "Trade rejected."; rs.copy(pendingTrade = null) }
-            "TRADE_CANCEL" -> mutate { rs -> eventText.value = "Trade cancelled."; rs.copy(pendingTrade = null) }
+
+            "TRADE_REJECT" -> mutate { rs ->
+                eventText.value = "Trade rejected."
+                rs.copy(pendingTrade = null)
+            }
+
+            "TRADE_CANCEL" -> mutate { rs ->
+                eventText.value = "Trade cancelled."
+                rs.copy(pendingTrade = null)
+            }
+
             "TRADE_FLAMINGO" -> {
                 if (parts.size != 4) return
                 val playerId = parts[1]
                 val giveIdx = parts[2].toIntOrNull() ?: return
                 val getIdx = parts[3].toIntOrNull() ?: return
-                applyFlamingoTradeInternal(playerId, resourceOrder.getOrNull(giveIdx) ?: return, resourceOrder.getOrNull(getIdx) ?: return)
+                applyFlamingoTradeInternal(
+                    playerId,
+                    resourceOrder.getOrNull(giveIdx) ?: return,
+                    resourceOrder.getOrNull(getIdx) ?: return
+                )
+            }
+
+            "CAPITOL_SPEND" -> {
+                if (parts.size != 2) return
+                val pid = parts[1]
+                mutate { rs ->
+                    val map = rs.capitolRerollTokens.toMutableMap()
+                    val cur = (map[pid] ?: 0) - 1
+                    if (cur > 0) map[pid] = cur else map.remove(pid)
+                    rs.copy(capitolRerollTokens = map)
+                }
+            }
+
+            // DEV: force a win for a given player
+            "DEV_FORCEWIN" -> {
+                if (parts.size != 2) return
+                val playerId = parts[1]
+                devForceWinInternal(playerId)
+            }
+
+            "PROFILE" -> {
+                // GAME:PROFILE:playerId:nickname:colorLong
+                if (parts.size != 4) return
+                val playerId = parts[1]
+                val nickname = parts[2]
+                val colorLong = parts[3].toLongOrNull()
+
+                mutate { rs ->
+                    val players = rs.players.toMutableMap()
+                    val existing = players[playerId] ?: return@mutate rs
+
+                    players[playerId] = existing.copy(
+                        name = if (nickname.isNotBlank()) nickname else existing.name,
+                        color = colorLong ?: existing.color
+                    )
+                    rs.copy(players = players)
+                }
             }
         }
     }
@@ -696,29 +1039,100 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         tryPlaceSettlement(playerId, v)
         p2p.send("GAME:SETTLEMENT:$playerId:${v.q}:${v.r}:${v.corner}")
     }
+
     fun onLocalEdgeTap(playerId: String, e: EdgeKey) {
         val current = _state.value
         if (current.pendingTrade != null) return
         tryPlaceRoad(playerId, e)
         p2p.send("GAME:ROAD:$playerId:${e.q}:${e.r}:${e.edge}")
     }
+
     fun onLocalRollDice(playerId: String) {
         val current = _state.value
-        if (current.turn != playerId || current.phase != GamePhase.PLAY || current.hasRolledThisTurn || current.pendingTrade != null) return
-        val roll = (1..6).random() + (1..6).random()
-        if (roll == 7) startRobberPhase(playerId) else applyRollResult(roll)
-        p2p.send("GAME:ROLL:$playerId:$roll")
+        if (current.turn != playerId ||
+            current.phase != GamePhase.PLAY ||
+            current.hasRolledThisTurn ||
+            current.pendingTrade != null
+        ) return
+
+        // How many Capitol reroll tokens this player currently has
+        val tokenCount = current.capitolRerollTokens[playerId] ?: 0
+
+        if (tokenCount > 0) {
+            // They have at least one token → roll once and let them choose keep/reroll
+            val firstRoll = (1..6).random() + (1..6).random()
+            rerollOffer.value = RerollOffer(playerId, firstRoll)
+        } else {
+            // Normal behavior: just roll and immediately apply
+            val roll = (1..6).random() + (1..6).random()
+            if (roll == 7) {
+                startRobberPhase(playerId)
+            } else {
+                applyRollResult(roll)
+            }
+            p2p.send("GAME:ROLL:$playerId:$roll")
+        }
     }
+
+    fun resolveReroll(keep: Boolean) {
+        val offer = rerollOffer.value ?: return
+        val playerId = offer.playerId
+        val first = offer.firstRoll
+
+        // Clear dialog state
+        rerollOffer.value = null
+
+        if (keep) {
+            // Keep first roll; do NOT spend a token
+            if (first == 7) {
+                startRobberPhase(playerId)
+            } else {
+                applyRollResult(first)
+            }
+            p2p.send("GAME:ROLL:$playerId:$first")
+        } else {
+            // Spend one Capitol token before rerolling
+            mutate { rs ->
+                val map = rs.capitolRerollTokens.toMutableMap()
+                val cur = (map[playerId] ?: 0) - 1
+                if (cur > 0) map[playerId] = cur else map.remove(playerId)
+                rs.copy(capitolRerollTokens = map)
+            }
+            p2p.send("GAME:CAPITOL_SPEND:$playerId")
+
+            // New roll is final
+            val second = (1..6).random() + (1..6).random()
+            if (second == 7) {
+                startRobberPhase(playerId)
+            } else {
+                applyRollResult(second)
+            }
+            p2p.send("GAME:ROLL:$playerId:$second")
+        }
+    }
+
     fun onLocalEndTurn(playerId: String) {
         val current = _state.value
         if (current.turn != playerId || current.phase != GamePhase.PLAY || current.pendingTrade != null) return
         internalEndTurn()
         p2p.send("GAME:ENDTURN:$playerId")
     }
+
     fun onLocalPlaceRobber(playerId: String, coord: HexCoord) {
         placeRobberInternal(playerId, coord)
         p2p.send("GAME:ROBBER:$playerId:${coord.q}:${coord.r}")
     }
+
+    /**
+     * Local player confirms which resources to discard for the robber.
+     * We apply it and broadcast to the peer.
+     */
+    fun onLocalRobberDiscard(playerId: String, discard: Map<Resource, Int>) {
+        mutate { rs -> applyRobberDiscard(rs, playerId, discard) }
+        val encoded = encodeResourceMap(discard)
+        p2p.send("GAME:ROBBER_DISCARD:$playerId:$encoded")
+    }
+
     fun onLocalProposeTrade(playerId: String, offer: Map<Resource, Int>, request: Map<Resource, Int>) {
         val cleanOffer = offer.filterValues { it > 0 }
         val cleanRequest = request.filterValues { it > 0 }
@@ -742,6 +1156,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         val requestStr = encodeResourceMap(request)
         p2p.send("GAME:TRADE_OFFER:$playerId:$other:$offerStr:$requestStr")
     }
+
     fun onLocalAcceptTrade(playerId: String) {
         val snapshot = _state.value
         val trade = snapshot.pendingTrade ?: return
@@ -749,27 +1164,70 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         mutate { rs -> applyTrade(rs, trade) }
         p2p.send("GAME:TRADE_ACCEPT:$playerId")
     }
+
     fun onLocalRejectTrade(playerId: String) {
         val snapshot = _state.value
         val trade = snapshot.pendingTrade ?: return
         if (trade.toId != playerId) return
-        mutate { rs -> eventText.value = "${rs.players[playerId]?.name ?: playerId} declined the trade."; rs.copy(pendingTrade = null) }
+        mutate { rs ->
+            eventText.value = "${rs.players[playerId]?.name ?: playerId} declined the trade."
+            rs.copy(pendingTrade = null)
+        }
         p2p.send("GAME:TRADE_REJECT:$playerId")
     }
+
     fun onLocalCancelTrade(playerId: String) {
         val snapshot = _state.value
         val trade = snapshot.pendingTrade ?: return
         if (trade.fromId != playerId) return
-        mutate { rs -> eventText.value = "Trade cancelled."; rs.copy(pendingTrade = null) }
+        mutate { rs ->
+            eventText.value = "Trade cancelled."
+            rs.copy(pendingTrade = null)
+        }
         p2p.send("GAME:TRADE_CANCEL:$playerId")
     }
+
     fun onLocalFlamingoTrade(playerId: String, give: Resource, get: Resource) {
         applyFlamingoTradeInternal(playerId, give, get)
         val giveIdx = resourceOrder.indexOf(give)
         val getIdx = resourceOrder.indexOf(get)
         p2p.send("GAME:TRADE_FLAMINGO:$playerId:$giveIdx:$getIdx")
     }
-    fun consumeEvent() { eventText.value = null }
+
+    // DEV: quickly force a win for local testing
+    fun devForceWinLocal(playerId: String) {
+        devForceWinInternal(playerId)
+        p2p.send("GAME:DEV_FORCEWIN:$playerId")
+    }
+
+    // DEV: internal implementation for forcing a win
+    private fun devForceWinInternal(playerId: String) {
+        mutate { rs ->
+            val players = rs.players.toMutableMap()
+            val me = players[playerId] ?: return@mutate rs
+
+            // We want this player to end up with 10 total points.
+            // points = settlements + 2 * cities + bonusPoints
+            val currentBase = me.settlements.size + me.cities.size * 2
+            val targetPoints = 10
+            val neededBonus = (targetPoints - currentBase).coerceAtLeast(0)
+
+            val updated = me.copy(bonusPoints = neededBonus)
+            players[playerId] = updated
+
+            eventText.value =
+                "Dev: ${rs.players[playerId]?.name ?: playerId} boosted to $targetPoints points."
+
+            // Recompute points for everyone and set winnerId accordingly.
+            rs.withUpdatedPlayers(players)
+        }
+    }
+
+    // Still here if you ever want to clear the message manually
+    fun consumeEvent() {
+        eventText.value = null
+    }
+
     fun setupPromptFor(playerId: String, rs: RoomState = _state.value): String? {
         if (rs.phase != GamePhase.SETUP) return null
         val starting = rs.startingPlayerId ?: return null
@@ -787,6 +1245,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             else null
         }
     }
+
     fun debugDumpEverything() { /* ... unchanged ... */ }
 
     private val MAX_TERRAIN_CLUSTER = 3
@@ -1089,13 +1548,17 @@ class GameViewModel(private val seed: Long) : ViewModel() {
 
     // --- UNUSED helpers kept for reference (unchanged) ---
 
-    // Build axial hex coordinates for a hex of given radius
     private fun hexCoords(radius: Int): List<HexCoord> {
         val result = mutableListOf<HexCoord>()
         for (q in -radius..radius) {
             for (r in -radius..radius) {
                 val s = -q - r
-                if (maxOf(kotlin.math.abs(q), kotlin.math.abs(r), kotlin.math.abs(s)) <= radius) {
+                if (maxOf(
+                        kotlin.math.abs(q),
+                        kotlin.math.abs(r),
+                        kotlin.math.abs(s)
+                    ) <= radius
+                ) {
                     result.add(HexCoord(q, r))
                 }
             }
@@ -1103,7 +1566,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         return result
     }
 
-    // Neighbor map using axial directions
     private fun buildNeighborMap(coords: List<HexCoord>): Map<HexCoord, List<HexCoord>> {
         val coordSet = coords.toSet()
         val deltas = listOf(
@@ -1126,8 +1588,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         return neighbors
     }
 
-    // Resource layout: 1 WATER + scaled counts of your 5 resources,
-    // with a max-cluster size constraint.
     private fun generateResourceLayout(
         coords: List<HexCoord>,
         neighbors: Map<HexCoord, List<HexCoord>>,
@@ -1156,7 +1616,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             )
         }
 
-        // Try *a lot* of random permutations with constraints
         repeat(50_000) {
             val shuffled = resourceBag.shuffled(rng)
             val layout = coords.zip(shuffled).toMap()
@@ -1165,13 +1624,11 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             }
         }
 
-        // Fallback: still random, just without the cluster constraint
         Log.w("BoardGen", "Falling back to unconstrained resource layout (random).")
         val fallback = coords.zip(resourceBag.shuffled(rng)).toMap()
         return fallback
     }
 
-    // No large groups of same terrain (except water, which we don’t really care about).
     private fun isResourceLayoutValid(
         layout: Map<HexCoord, Resource>,
         neighbors: Map<HexCoord, List<HexCoord>>
@@ -1182,7 +1639,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             Resource.BUCKY,
             Resource.CHAIR,
             Resource.CHEESE_CURD
-            // WATER is allowed to do whatever; and we only have 1 anyway
         )
 
         for (terrain in terrainTypes) {
@@ -1190,7 +1646,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             for ((coord, res) in layout) {
                 if (res != terrain || coord in visited) continue
 
-                // BFS to measure cluster size
                 var count = 0
                 val queue: ArrayDeque<HexCoord> = ArrayDeque()
                 queue.add(coord)
@@ -1213,7 +1668,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         return true
     }
 
-    // Number layout (unused in the current path).
     private fun generateNumberLayout(
         coords: List<HexCoord>,
         neighbors: Map<HexCoord, List<HexCoord>>,
@@ -1248,7 +1702,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             )
         }
 
-        // Try many random assignments with adjacency rules
         repeat(50_000) {
             val shuffled = numberBag.shuffled(rng)
             val layout = mutableMapOf<HexCoord, Int?>()
@@ -1265,7 +1718,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             }
         }
 
-        // Fallback: random numbers but without adjacency constraints
         Log.w("BoardGen", "Falling back to unconstrained number layout (random).")
         val fallback = mutableMapOf<HexCoord, Int?>()
         val shuffled = numberBag.shuffled(rng)
@@ -1286,13 +1738,10 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 val b = layout[neighbor] ?: 0
                 if (b == 0) continue
 
-                // Same number can't touch
                 if (nA == b) return false
 
-                // 6 & 8 can't touch
                 if ((nA == 6 && b == 8) || (nA == 8 && b == 6)) return false
 
-                // 2 & 12 can't touch
                 if ((nA == 2 && b == 12) || (nA == 12 && b == 2)) return false
             }
         }

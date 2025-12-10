@@ -15,9 +15,10 @@ import kotlin.math.atan2
 import kotlin.math.sqrt
 import kotlin.random.Random
 
-// Overall phase – now includes SETUP and ROBBER.
 enum class GamePhase { SETUP, PLAY, ROBBER }
-enum class BuildType { ROAD, SETTLEMENT, CITY }
+enum class BuildType { ROAD, SETTLEMENT, CITY, VICTORY_CARD }
+
+enum class VictoryCardType { BIKE_PATH, BADGER_SPIRIT, UWPD, BADGER_MERCH }
 
 data class TradeOffer(
     val fromId: String,
@@ -31,11 +32,12 @@ data class PlayerState(
     val name: String,
     val resources: Map<Resource, Int> = emptyMap(),
     val settlements: Set<VertexKey> = emptySet(),
-    val cities: Set<VertexKey> = emptySet(),       // NEW
+    val cities: Set<VertexKey> = emptySet(),
     val roads: Set<EdgeKey> = emptySet(),
-    val bonusPoints: Int = 0,                      // for Badger Spirit etc later
+    val victoryCards: Map<VictoryCardType, Int> = emptyMap(),
+    val bonusPoints: Int = 0,
     val points: Int = 0,
-    val color: Long? = null,           // ARGB long (preferred color)
+    val color: Long? = null,
     val avatarUri: String? = null
 )
 
@@ -48,7 +50,6 @@ data class RoomState(
     val hasRolledThisTurn: Boolean = false,
     val robberCoord: HexCoord? = null,
     val robberMoverId: String? = null,
-    // playerId -> how many cards they still must discard after a 7
     val robberDiscardsNeeded: Map<String, Int> = emptyMap(),
     val startingPlayerId: String? = null,
     val pendingTrade: TradeOffer? = null,
@@ -59,11 +60,11 @@ data class RoomState(
     val portVertices: Set<VertexKey> = emptySet(),
     val bascomTradeTokens: Map<String, Int> = emptyMap(),
 
-    // Capitol lvl1: reroll tokens (max 1 for now; lvl2 will allow 2 once cities exist)
     val capitolRerollTokens: Map<String, Int> = emptyMap(),
 
-    // Engineering lvl1: dev-card boost active for this turn (no dev cards yet, just flag)
+    // Engineering lvl1: dev-card boost active for this turn
     val engineeringBoostThisTurn: Set<String> = emptySet(),
+    val freeRoadsRemaining: Map<String, Int> = emptyMap(),
     val winnerId: String? = null
 )
 
@@ -72,7 +73,6 @@ data class RerollOffer(
     val firstRoll: Int
 )
 
-// CHANGED: Accept seed in constructor
 class GameViewModel(private val seed: Long) : ViewModel() {
     val rerollOffer = MutableStateFlow<RerollOffer?>(null)
     val rerollOfferState: StateFlow<RerollOffer?> = rerollOffer
@@ -88,7 +88,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
 
     private val p2p = P2PHolder.service
 
-    // CHANGED: Use seeded random for board generation
     private val boardTiles: List<Tile> = generateBoard(seed)
 
     private val boardGraph: BoardGraph = buildBoardGraph(boardTiles)
@@ -138,14 +137,52 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             copy(players = newPlayers)
         }
     }
+    fun onLocalPlayVictoryCard(playerId: String, card: VictoryCardType) {
+        val current = _state.value
+        // Must be your turn, in PLAY phase, after rolling, and no blocking trade
+        if (current.turn != playerId ||
+            current.phase != GamePhase.PLAY ||
+            !current.hasRolledThisTurn ||
+            current.pendingTrade != null
+        ) return
 
+        val me = current.players[playerId] ?: return
+        val count = me.victoryCards[card] ?: 0
+        if (count <= 0) return
+
+        // Bike Path, Badger Spirit, UWPD are immediate-use
+        if (card == VictoryCardType.BADGER_MERCH) return  // handled by a separate API with chosen resources
+
+        applyPlayVictoryCardInternal(playerId, card, merchSelection = null)
+        p2p.send("GAME:VICTORY_PLAY:$playerId:${card.ordinal}")
+    }
+
+    fun onLocalBadgerMerch(playerId: String, selection: Map<Resource, Int>) {
+        val total = selection.values.sum()
+        if (total != 2) return
+
+        val current = _state.value
+        if (current.turn != playerId ||
+            current.phase != GamePhase.PLAY ||
+            !current.hasRolledThisTurn ||
+            current.pendingTrade != null
+        ) return
+
+        val me = current.players[playerId] ?: return
+        val count = me.victoryCards[VictoryCardType.BADGER_MERCH] ?: 0
+        if (count <= 0) return
+
+        applyPlayVictoryCardInternal(playerId, VictoryCardType.BADGER_MERCH, selection)
+        val encoded = encodeResourceMap(selection)
+        p2p.send("GAME:VICTORY_PLAY:$playerId:${VictoryCardType.BADGER_MERCH.ordinal}:$encoded")
+    }
     private fun bankRateFor(player: PlayerState, res: Resource): Int {
         // Player gets 3:1 ONLY if they have a settlement on a port
         // whose resource matches `res`.
         val hasSpecificPort = player.settlements.any { vKey ->
             portResourcesInternal[vKey] == res
         }
-        return if (hasSpecificPort) 3 else 4    // resource-specific, not global
+        return if (hasSpecificPort) 3 else 4
     }
 
     fun bascomTokensFor(playerId: String): Int =
@@ -159,13 +196,11 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         return if (tokens > 0) 2 else baseRate
     }
 
-    // Does this player currently have a Bascom "super trade" available?
     fun hasBascomPower(playerId: String): Boolean {
         val rs = _state.value
         return (rs.bascomTradeTokens[playerId] ?: 0) > 0
     }
 
-    // Convenience wrapper for UI
     fun bankRateFor(playerId: String, res: Resource): Int {
         val rs = _state.value
         val player = rs.players[playerId] ?: return 4
@@ -175,7 +210,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
     private fun assignPortResources(portVertices: Set<VertexKey>): Map<VertexKey, Resource> {
         if (portVertices.isEmpty()) return emptyMap()
 
-        // The five tradable resources (no lake)
         val resources = listOf(
             Resource.CONCRETE,
             Resource.STUDENT,
@@ -184,22 +218,20 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             Resource.CHEESE_CURD
         )
 
-        val rng = Random(seed + 1)   // deterministic but separate from boardTiles RNG
+        val rng = Random(seed + 1)
         val portsShuffled = portVertices.toList().shuffled(rng)
 
         val result = mutableMapOf<VertexKey, Resource>()
         for (i in portsShuffled.indices) {
-            val res = resources[i % resources.size]  // if more than 5 ports, wrap
+            val res = resources[i % resources.size]
             result[portsShuffled[i]] = res
         }
         return result
     }
 
-    // Exposed to UI for drawing
     val portResources: Map<VertexKey, Resource>
         get() = portResourcesInternal
 
-    // Starting player still random off the seed
     private val startingPlayerId: String =
         if (Random(seed).nextBoolean()) "host" else "guest"
 
@@ -225,7 +257,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
     val state: StateFlow<RoomState> = _state
 
     fun applyLocalProfile(playerId: String, profile: ProfileSettings) {
-        // Update local state
         mutate { rs ->
             val players = rs.players.toMutableMap()
             val p = players[playerId] ?: return@mutate rs
@@ -242,13 +273,11 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             rs.copy(players = players)
         }
 
-        // Broadcast name + color to peer (avatarUri is local-only and wouldn’t work cross-device)
         val safeNickname = (profile.nickname ?: "").replace(":", " ")
         val colorStr = (profile.preferredColor ?: -1L).toString()
         p2p.send("GAME:PROFILE:$playerId:$safeNickname:$colorStr")
     }
 
-    // Status / notification text (now shown near "Your Resources" instead of snackbar)
     val eventText = MutableStateFlow<String?>(null)
 
     init {
@@ -292,12 +321,17 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             Resource.CHAIR to 1,
             Resource.CHEESE_CURD to 1
         ),
-        BuildType.CITY to mapOf(                           // NEW
+        BuildType.CITY to mapOf(
             Resource.STUDENT to 2,
             Resource.CHAIR to 3
+        ),
+        BuildType.VICTORY_CARD to mapOf(
+            Resource.STUDENT to 1,
+            Resource.CHAIR to 1,
+            Resource.CHEESE_CURD to 1
         )
     )
-
+    private val victoryCardRng = Random(seed + 99)
     private val tradableResources: List<Resource> = listOf(
         Resource.CONCRETE,
         Resource.STUDENT,
@@ -305,7 +339,16 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         Resource.CHAIR,
         Resource.CHEESE_CURD
     )
-
+    private fun drawVictoryCard(): VictoryCardType {
+        // Probabilities: Bike Path 1/10, Badger Spirit 3/10, UWPD 5/10, Badger Merch 1/10
+        val r = victoryCardRng.nextInt(10)
+        return when {
+            r == 0 -> VictoryCardType.BIKE_PATH
+            r in 1..3 -> VictoryCardType.BADGER_SPIRIT
+            r in 4..8 -> VictoryCardType.UWPD
+            else -> VictoryCardType.BADGER_MERCH
+        }
+    }
     private val resourceOrder: Array<Resource> = tradableResources.toTypedArray()
 
     private fun encodeResourceMap(map: Map<Resource, Int>): String =
@@ -496,6 +539,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             }
 
             if (rs.phase != GamePhase.PLAY || rs.turn != playerId) return@mutate rs
+
             val hasNetwork = me.settlements.isNotEmpty() || me.roads.isNotEmpty()
             if (hasNetwork) {
                 val networkVertices = mutableSetOf<VertexKey>().apply {
@@ -508,15 +552,31 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 val (v1, v2) = edge.vertices
                 if (v1 !in networkVertices && v2 !in networkVertices) return@mutate rs
             }
-            if (!canAfford(me, BuildType.ROAD)) {
+
+// NEW: check free roads from Bike Path
+            val freeRoads = rs.freeRoadsRemaining[playerId] ?: 0
+            val usingFreeRoad = freeRoads > 0
+
+            if (!usingFreeRoad && !canAfford(me, BuildType.ROAD)) {
                 eventText.value = "Not enough resources to build a path."
                 return@mutate rs
             }
-            val paidPlayer = payFor(me, BuildType.ROAD)
+
+            val paidPlayer = if (usingFreeRoad) me else payFor(me, BuildType.ROAD)
+
             val newRoads = paidPlayer.roads.toMutableSet().apply { add(e) }
-            players[playerId] = paidPlayer.copy(roads = newRoads)
-            eventText.value = "${paidPlayer.name} built a path."
-            rs.copy(players = players)
+            val updatedPlayer = paidPlayer.copy(roads = newRoads)
+            players[playerId] = updatedPlayer
+
+// NEW: decrement free road count if we used one
+            val freeMap = rs.freeRoadsRemaining.toMutableMap()
+            if (usingFreeRoad) {
+                val remaining = freeRoads - 1
+                if (remaining > 0) freeMap[playerId] = remaining else freeMap.remove(playerId)
+            }
+
+            eventText.value = "${updatedPlayer.name} built a path."
+            rs.copy(players = players, freeRoadsRemaining = freeMap)
         }
     }
 
@@ -533,6 +593,10 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             return edgesIncidentToVertex(v).filter { it !in takenEdges }.toSet()
         }
         if (rs.phase != GamePhase.PLAY) return emptySet()
+        val freeRoads = rs.freeRoadsRemaining[playerId] ?: 0
+        val hasFreeRoad = freeRoads > 0
+
+        if (!hasFreeRoad && !canAfford(me, BuildType.ROAD)) return emptySet()
         if (!canAfford(me, BuildType.ROAD)) return emptySet()
         val hasNetwork = me.settlements.isNotEmpty() || me.roads.isNotEmpty()
         val networkVertices: Set<VertexKey> = if (!hasNetwork) emptySet() else buildSet {
@@ -542,6 +606,7 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 add(rEdge.vertices.first); add(rEdge.vertices.second)
             }
         }
+
         val takenEdges = rs.players.values.flatMapTo(mutableSetOf()) { it.roads }
         val result = mutableSetOf<EdgeKey>()
         for ((eKey, edge) in boardGraph.edges) {
@@ -554,7 +619,82 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         }
         return result
     }
+    fun canBuyVictoryCard(playerId: String, rs: RoomState = _state.value): Boolean {
+        if (rs.phase != GamePhase.PLAY) return false
+        if (rs.turn != playerId) return false
+        if (rs.pendingTrade != null) return false
+        val me = rs.players[playerId] ?: return false
+        return canAfford(me, BuildType.VICTORY_CARD)
+    }
+    private fun applyPlayVictoryCardInternal(
+        playerId: String,
+        card: VictoryCardType,
+        merchSelection: Map<Resource, Int>? = null
+    ) {
+        mutate { rs ->
+            val players = rs.players.toMutableMap()
+            val me = players[playerId] ?: return@mutate rs
 
+            val currentCount = me.victoryCards[card] ?: 0
+            if (currentCount <= 0) return@mutate rs
+
+            // Remove one copy of this card
+            val newCards = me.victoryCards.toMutableMap()
+            if (currentCount == 1) newCards.remove(card) else newCards[card] = currentCount - 1
+
+            var updatedPlayer = me.copy(victoryCards = newCards)
+
+            val freeMap = rs.freeRoadsRemaining.toMutableMap()
+            var newPhase = rs.phase
+            var newRobberMoverId = rs.robberMoverId
+
+            when (card) {
+                VictoryCardType.BIKE_PATH -> {
+                    val existing = freeMap[playerId] ?: 0
+                    freeMap[playerId] = existing + 2
+                    eventText.value = "${updatedPlayer.name} played Bike Path – place 2 free paths."
+                }
+
+                VictoryCardType.BADGER_SPIRIT -> {
+                    updatedPlayer = updatedPlayer.copy(bonusPoints = updatedPlayer.bonusPoints + 1)
+                    eventText.value = "${updatedPlayer.name} played Badger Spirit (+1 VP)."
+                }
+
+                VictoryCardType.UWPD -> {
+                    // Like a knight card: move robber, but no discards
+                    newPhase = GamePhase.ROBBER
+                    newRobberMoverId = playerId
+                    eventText.value =
+                        "${updatedPlayer.name} called UWPD – tap a tile to move the Badger Patrol."
+                }
+
+                VictoryCardType.BADGER_MERCH -> {
+                    val sel = merchSelection ?: return@mutate rs
+                    val total = sel.values.sum()
+                    if (total != 2) return@mutate rs
+
+                    val newRes = updatedPlayer.resources.toMutableMap()
+                    sel.forEach { (res, count) ->
+                        if (count > 0 && res != Resource.LAKE) {
+                            newRes[res] = (newRes[res] ?: 0) + count
+                        }
+                    }
+                    updatedPlayer = updatedPlayer.copy(resources = newRes)
+                    eventText.value =
+                        "${updatedPlayer.name} visited Badger Merch and gained 2 resources."
+                }
+            }
+
+            players[playerId] = updatedPlayer
+
+            rs.copy(
+                players = players,
+                phase = newPhase,
+                robberMoverId = newRobberMoverId,
+                freeRoadsRemaining = freeMap
+            ).withUpdatedPlayers(players)
+        }
+    }
     fun legalSettlementVerticesFor(playerId: String, rs: RoomState = _state.value): Set<VertexKey> {
         if (rs.phase != GamePhase.PLAY) return emptySet()
         if (rs.pendingTrade != null) return emptySet()
@@ -1005,13 +1145,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 }
             }
 
-            // DEV: force a win for a given player
-            "DEV_FORCEWIN" -> {
-                if (parts.size != 2) return
-                val playerId = parts[1]
-                devForceWinInternal(playerId)
-            }
-
             "PROFILE" -> {
                 // GAME:PROFILE:playerId:nickname:colorLong
                 if (parts.size != 4) return
@@ -1029,6 +1162,28 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                     )
                     rs.copy(players = players)
                 }
+            }
+            "VICTORY_BUY" -> {
+                if (parts.size != 3) return
+                val playerId = parts[1]
+                val ordinal = parts[2].toIntOrNull() ?: return
+                val card = VictoryCardType.values().getOrNull(ordinal) ?: return
+                applyBuyVictoryCardInternal(playerId, card)
+            }
+
+            "VICTORY_PLAY" -> {
+                if (parts.size < 3) return
+                val playerId = parts[1]
+                val ordinal = parts[2].toIntOrNull() ?: return
+                val card = VictoryCardType.values().getOrNull(ordinal) ?: return
+
+                val merchSelection =
+                    if (card == VictoryCardType.BADGER_MERCH && parts.size >= 4)
+                        decodeResourceMap(parts[3])
+                    else
+                        null
+
+                applyPlayVictoryCardInternal(playerId, card, merchSelection)
             }
         }
     }
@@ -1132,7 +1287,49 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         val encoded = encodeResourceMap(discard)
         p2p.send("GAME:ROBBER_DISCARD:$playerId:$encoded")
     }
+    private fun applyBuyVictoryCardInternal(playerId: String, card: VictoryCardType) {
+        mutate { rs ->
+            val players = rs.players.toMutableMap()
+            val me = players[playerId] ?: return@mutate rs
 
+            if (!canAfford(me, BuildType.VICTORY_CARD)) {
+                if (_state.value.turn == playerId) {
+                    eventText.value = "Not enough resources to buy a victory card."
+                }
+                return@mutate rs
+            }
+
+            val paid = payFor(me, BuildType.VICTORY_CARD)
+
+            val newCards = paid.victoryCards.toMutableMap()
+            newCards[card] = (newCards[card] ?: 0) + 1
+
+            val updated = paid.copy(victoryCards = newCards)
+            players[playerId] = updated
+
+            eventText.value = "${updated.name} bought a victory card."
+
+            rs.withUpdatedPlayers(players)
+        }
+    }
+
+    fun onLocalBuyVictoryCard(playerId: String) {
+        val current = _state.value
+        if (current.turn != playerId ||
+            current.phase != GamePhase.PLAY ||
+            current.pendingTrade != null
+        ) return
+
+        val me = current.players[playerId] ?: return
+        if (!canAfford(me, BuildType.VICTORY_CARD)) {
+            eventText.value = "Not enough resources to buy a victory card."
+            return
+        }
+
+        val card = drawVictoryCard()
+        applyBuyVictoryCardInternal(playerId, card)
+        p2p.send("GAME:VICTORY_BUY:$playerId:${card.ordinal}")
+    }
     fun onLocalProposeTrade(playerId: String, offer: Map<Resource, Int>, request: Map<Resource, Int>) {
         val cleanOffer = offer.filterValues { it > 0 }
         val cleanRequest = request.filterValues { it > 0 }
@@ -1194,36 +1391,8 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         p2p.send("GAME:TRADE_FLAMINGO:$playerId:$giveIdx:$getIdx")
     }
 
-    // DEV: quickly force a win for local testing
-    fun devForceWinLocal(playerId: String) {
-        devForceWinInternal(playerId)
-        p2p.send("GAME:DEV_FORCEWIN:$playerId")
-    }
 
-    // DEV: internal implementation for forcing a win
-    private fun devForceWinInternal(playerId: String) {
-        mutate { rs ->
-            val players = rs.players.toMutableMap()
-            val me = players[playerId] ?: return@mutate rs
 
-            // We want this player to end up with 10 total points.
-            // points = settlements + 2 * cities + bonusPoints
-            val currentBase = me.settlements.size + me.cities.size * 2
-            val targetPoints = 10
-            val neededBonus = (targetPoints - currentBase).coerceAtLeast(0)
-
-            val updated = me.copy(bonusPoints = neededBonus)
-            players[playerId] = updated
-
-            eventText.value =
-                "Dev: ${rs.players[playerId]?.name ?: playerId} boosted to $targetPoints points."
-
-            // Recompute points for everyone and set winnerId accordingly.
-            rs.withUpdatedPlayers(players)
-        }
-    }
-
-    // Still here if you ever want to clear the message manually
     fun consumeEvent() {
         eventText.value = null
     }
@@ -1250,7 +1419,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
 
     private val MAX_TERRAIN_CLUSTER = 3
 
-    // CHANGED: Use the seed for deterministic board generation
     private fun generateBoard(seed: Long): List<Tile> {
         val rng = Random(seed)
 
@@ -1270,8 +1438,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         val innerCoords = allCoords.filter { ringOf(it) <= 2 }  // radius <= 2
         val outerCoords = allCoords.filter { ringOf(it) == 3 }  // rim
 
-        // --- Landmarks: spread around the outer rim (bonus tiles on the edge) ---
-        // Use all Landmark enum values so if you add more, they automatically get placed.
         val landmarkTypes = Landmark.values().toList()
         val landmarkByCoord = mutableMapOf<HexCoord, Landmark>()
 
@@ -1288,7 +1454,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 atan2(y, x)
             }
 
-            // Rotate so that the top-center tile (0, -radius) is first, if it exists.
             val topCoord = HexCoord(0, -radius)
             val startIndex = outerOrderedByAngle.indexOf(topCoord)
             val ringOrdered = if (startIndex >= 0) {
@@ -1332,7 +1497,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 cluster.add(current)
                 available.remove(current)
 
-                // neighbors that are still in innerAvailable
                 for (dir in HEX_DIRECTIONS) {
                     val n = HexCoord(current.q + dir.q, current.r + dir.r)
                     if (available.contains(n)) {
@@ -1353,7 +1517,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         val bigLakeStart = pickStart(emptySet())
         val bigLake = growLake(bigLakeStart, 4, innerAvailable)
 
-        // Keep the small lake a bit away from the big one
         val excludedForSmall = buildSet {
             addAll(bigLake)
             for (c in bigLake) {
@@ -1370,9 +1533,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
 
         // --- Land coords (non-lake) ---
         val landCoords = allCoords.filter { it !in lakeCoords }
-        // For radius 3: 37 total - 7 water = 30 land
-
-        // --- Resource bag for land tiles (5 resources × 6 = 30) ---
         val resourceBag = mutableListOf<Resource>().apply {
             repeat(6) { add(Resource.CONCRETE) }
             repeat(6) { add(Resource.STUDENT) }
@@ -1387,8 +1547,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
                 .map { d -> HexCoord(coord.q + d.q, coord.r + d.r) }
                 .filter { allCoordSet.contains(it) }
         }
-
-        // --- First, assign resources (including lakes), numbers later ---
         val tilesByCoord = mutableMapOf<HexCoord, Tile>()
 
         // Lakes = water tiles with no number token
@@ -1461,8 +1619,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         }
 
         val finalNumbers = chosenNumbers ?: run {
-            // Fallback: just assign numbers in order, only enforcing
-            // "no 6/8 on landmark" to avoid hard-breaking landmarks.
             val map = mutableMapOf<HexCoord, Int>()
             val it = numberBag.iterator()
             for (coord in landCoordsList) {
@@ -1476,7 +1632,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             map
         }
 
-        // --- Build final tile list in stable order ---
         return allCoords
             .sortedWith(compareBy<HexCoord> { it.q }.thenBy { it.r })
             .map { coord ->
@@ -1538,7 +1693,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
             chosen.add(cand)
         }
 
-        // Safety net: in pathological layouts, still guarantee at least one port
         if (chosen.isEmpty()) {
             chosen.add(shuffled.first())
         }
@@ -1546,7 +1700,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
         return chosen.mapTo(mutableSetOf()) { it.vertexKey }
     }
 
-    // --- UNUSED helpers kept for reference (unchanged) ---
 
     private fun hexCoords(radius: Int): List<HexCoord> {
         val result = mutableListOf<HexCoord>()
@@ -1749,7 +1902,6 @@ class GameViewModel(private val seed: Long) : ViewModel() {
     }
 }
 
-// CHANGED: Factory to inject the seed
 class GameViewModelFactory(private val seed: Long) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(GameViewModel::class.java)) {

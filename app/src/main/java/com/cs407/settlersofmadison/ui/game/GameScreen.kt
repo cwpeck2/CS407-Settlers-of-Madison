@@ -58,7 +58,7 @@ fun GameScreen(
 
     val state by vm.state.collectAsState()
     val eventMessage by vm.eventText.collectAsState()
-
+    var showBadgerMerchDialog by remember { mutableStateOf(false) }
     var showPauseDialog by remember { mutableStateOf(false) }
     var placingRoad by remember { mutableStateOf(false) }
     var placingSettlement by remember { mutableStateOf(false) }
@@ -267,6 +267,15 @@ fun GameScreen(
 
                     // --- Build bar only in normal PLAY phase and no blocking trade ---
                     val localPlayer = state.players[localPlayerId]
+                    val canBuyVictoryNow = localPlayer != null &&
+                            vm.canBuyVictoryCard(localPlayerId, state)
+
+// Can use victory cards? (must have rolled this turn)
+                    val canUseVictoryCards = localPlayer != null &&
+                            isMyTurn &&
+                            state.phase == GamePhase.PLAY &&
+                            state.hasRolledThisTurn &&
+                            !hasBlockingTrade
                     if (state.phase == GamePhase.PLAY && !hasBlockingTrade) {
                         val canBuildRoadNow = localPlayer != null &&
                                 vm.legalRoadEdgesFor(localPlayerId, state).isNotEmpty()
@@ -296,7 +305,14 @@ fun GameScreen(
                                         placingRoad = false
                                     }
                                 }
-                            }
+                            },
+                            // keep city-related args default (unused for now)
+                            canBuildCity = false,
+                            placingCity = false,
+                            onToggleCityPlacement = {},
+                            // NEW: buy victory card
+                            canBuyDevCard = canBuyVictoryNow,
+                            onBuyDevCard = { vm.onLocalBuyVictoryCard(localPlayerId) }
                         )
                     }
 
@@ -324,7 +340,31 @@ fun GameScreen(
                             onCancel = { vm.onLocalCancelTrade(localPlayerId) }
                         )
                     }
-
+                    VictoryCardBar(
+                        player = localPlayer,
+                        canUse = canUseVictoryCards,
+                        onPlayCard = { card ->
+                            when (card) {
+                                VictoryCardType.BADGER_MERCH -> {
+                                    if (canUseVictoryCards) {
+                                        showBadgerMerchDialog = true
+                                    }
+                                }
+                                else -> {
+                                    vm.onLocalPlayVictoryCard(localPlayerId, card)
+                                }
+                            }
+                        }
+                    )
+                    if (showBadgerMerchDialog) {
+                        BadgerMerchDialog(
+                            onConfirm = { selection ->
+                                vm.onLocalBadgerMerch(localPlayerId, selection)
+                            },
+                            onDismiss = { showBadgerMerchDialog = false },
+                            backgroundResId = R.drawable.game_background
+                        )
+                    }
                     // --- Local player's resource deck ("hand" of cards) + notifications ---
                     PlayerResourceDeck(
                         title = "Your Resources",
@@ -350,13 +390,7 @@ fun GameScreen(
                     onTrade = { showTradeDialog = true }
                 )
 
-                // --- DEV overlay: force a win for quick testing ---
-                DevTestOverlay(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp),
-                    onForceWin = { vm.devForceWinLocal(localPlayerId) }
-                )
+
             }
 
             // --- Win overlay (on top of everything) ---
@@ -1288,7 +1322,134 @@ private fun Map<Resource, Int>.describe(): String =
         .filter { it.value > 0 }
         .joinToString { "${it.value} ${it.key.displayName()}" }
         .ifEmpty { "nothing" }
+@Composable
+private fun VictoryCardBar(
+    player: PlayerState?,
+    canUse: Boolean,
+    onPlayCard: (VictoryCardType) -> Unit
+) {
+    val cards = player?.victoryCards ?: emptyMap()
+    if (cards.isEmpty()) return
 
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "Victory Cards:",
+            style = MaterialTheme.typography.labelLarge
+        )
+
+        VictoryCardType.values().forEach { type ->
+            val count = cards[type] ?: 0
+            if (count > 0) {
+                OutlinedButton(
+                    onClick = { onPlayCard(type) },
+                    enabled = canUse,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text("${type.displayName()} x$count")
+                }
+            }
+        }
+    }
+}
+
+private fun VictoryCardType.displayName(): String =
+    when (this) {
+        VictoryCardType.BIKE_PATH     -> "Bike Path"
+        VictoryCardType.BADGER_SPIRIT -> "Badger Spirit"
+        VictoryCardType.UWPD          -> "UWPD"
+        VictoryCardType.BADGER_MERCH  -> "Badger Merch"
+    }
+
+@Composable
+private fun BadgerMerchDialog(
+    onConfirm: (Map<Resource, Int>) -> Unit,
+    onDismiss: () -> Unit,
+    backgroundResId: Int? = null
+) {
+    val allResources = Resource.values().filter { it != Resource.LAKE }
+    var selection by remember { mutableStateOf<Map<Resource, Int>>(emptyMap()) }
+
+    fun setAmount(res: Resource, value: Int) {
+        val raw = value.coerceIn(0, 2)
+        val othersTotal = selection.filterKeys { it != res }.values.sum()
+        val allowedForThis = (2 - othersTotal).coerceAtLeast(0)
+        val final = raw.coerceIn(0, allowedForThis)
+
+        selection = selection.toMutableMap().also {
+            if (final == 0) it.remove(res) else it[res] = final
+        }
+    }
+
+    val totalSelected = selection.values.sum()
+    val canConfirm = totalSelected == 2
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        text = {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                if (backgroundResId != null) {
+                    Image(
+                        painter = painterResource(id = backgroundResId),
+                        contentDescription = null,
+                        modifier = Modifier.matchParentSize(),
+                        contentScale = ContentScale.Crop,
+                        alpha = 0.15f
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        "Badger Merch",
+                        style = MaterialTheme.typography.titleLarge,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "Choose 2 resources of any kind to add to your deck.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    ResourceAmountRow(
+                        resources = allResources,
+                        amounts = selection,
+                        maxFor = { 2 },  // actual limit handled by setAmount
+                        onChange = ::setAmount
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConfirm(selection.filterValues { it > 0 })
+                    onDismiss()
+                },
+                enabled = canConfirm
+            ) {
+                Text("Gain 2 Resources")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
 @Composable
 private fun ResourceAmountRow(
     resources: List<Resource>,

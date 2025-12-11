@@ -51,7 +51,7 @@ fun ResourceCard(
                 .fillMaxSize(),
             contentAlignment = Alignment.BottomEnd
         ) {
-            // The important part: image fills card & is clipped to rounded corners
+
             Image(
                 painter = painterResource(id = res.type.toCardDrawable()),
                 contentDescription = res.type.name,
@@ -61,7 +61,7 @@ fun ResourceCard(
                 contentScale = ContentScale.Crop
             )
 
-            // Little "x2" / "x3" badge like in your screenshot
+
             if (res.amount > 1) {
                 Box(
                     modifier = Modifier
@@ -83,8 +83,8 @@ fun ResourceCard(
 }
 
 private fun ResourceType.toCardDrawable(): Int = when (this) {
-    ResourceType.CONCRETE    -> R.drawable.concrete_resource      // your concrete card PNG
-    ResourceType.STUDENT     -> R.drawable.student_resource       // your purple student card
+    ResourceType.CONCRETE    -> R.drawable.concrete_resource
+    ResourceType.STUDENT     -> R.drawable.student_resource
     ResourceType.BUCKY       -> R.drawable.bucky_resource
     ResourceType.CHAIR       -> R.drawable.chair_resource
     ResourceType.CHEESE_CURD -> R.drawable.cheese_curd_resource

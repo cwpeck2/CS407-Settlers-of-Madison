@@ -55,20 +55,21 @@ fun HexBoard(
         Resource.STUDENT     to ImageBitmap.imageResource(id = R.drawable.tile_student),
         Resource.BUCKY       to ImageBitmap.imageResource(id = R.drawable.tile_bucky),
         Resource.CHAIR       to ImageBitmap.imageResource(id = R.drawable.tile_chair),
-        Resource.CHEESE_CURD to ImageBitmap.imageResource(id = R.drawable.tile_cheese_curds)
+        Resource.CHEESE_CURD to ImageBitmap.imageResource(id = R.drawable.tile_cheese_curds),
+        Resource.LAKE        to ImageBitmap.imageResource(id = R.drawable.tile_lake)
     )
 
-    // PORT ICONS:
-    // Right now we just re-use tile textures, scaled small in a ring.
-    // If you have dedicated PNGs, swap these to your own drawables, e.g.:
-    //   ImageBitmap.imageResource(R.drawable.port_concrete), etc.
+
+
+
+
     val portIcons: Map<Resource, ImageBitmap> = mapOf(
         Resource.CONCRETE    to ImageBitmap.imageResource(R.drawable.concrete_port),
         Resource.STUDENT     to ImageBitmap.imageResource(R.drawable.student_port),
         Resource.BUCKY       to ImageBitmap.imageResource(R.drawable.bucky_port),
         Resource.CHAIR       to ImageBitmap.imageResource(R.drawable.chair_port),
         Resource.CHEESE_CURD to ImageBitmap.imageResource(R.drawable.cheese_curd_port)
-        // no entry for Resource.LAKE
+
     )
     val landmarkTextures: Map<Landmark, ImageBitmap> =
         Landmark.values().associateWith { lm ->
@@ -81,6 +82,7 @@ fun HexBoard(
             }
             ImageBitmap.imageResource(resId)
         }
+    val robberIcon: ImageBitmap = ImageBitmap.imageResource(id = R.drawable.badger_patrol)
     val tiles = roomState.tiles
     val graph = remember(tiles) { buildBoardGraph(tiles) }
 
@@ -91,20 +93,20 @@ fun HexBoard(
         val boardWidthPx = with(density) { maxWidth.toPx() }
         val boardHeightPx = with(density) { maxHeight.toPx() }
 
-        // Slightly smaller so everything fits on phones
+
         val hexSize = min(boardWidthPx, boardHeightPx) / 9.5f
 
-        // 1) tile centers in screen space
+
         val tileCenters = remember(tiles, hexSize, boardWidthPx, boardHeightPx) {
             computeTileCenters(tiles, hexSize, boardWidthPx, boardHeightPx)
         }
 
-        // 2) vertex positions (FIXED for border vertices)
+
         val vertexPositions = remember(graph, tileCenters, hexSize) {
             computeVertexPositions(graph, tileCenters, hexSize)
         }
 
-        // 3) edge centers
+
         val edgeCenters = remember(graph, vertexPositions) {
             computeEdgeCenters(graph, vertexPositions)
         }
@@ -127,7 +129,7 @@ fun HexBoard(
                     tiles
                 ) {
                     detectTapGestures { tapOffset ->
-                        // If robber is being moved → choose tile
+
                         if (robberMode && onTileTap != null) {
                             val tileCoord = findNearestTile(
                                 tap = tapOffset,
@@ -138,7 +140,7 @@ fun HexBoard(
                             if (tileCoord != null) {
                                 val tile = tiles.firstOrNull { it.coord == tileCoord }
 
-                                // Don’t allow robber on lakes / water tiles or on the same tile
+
                                 if (tile == null ||
                                     tile.resource == Resource.LAKE ||
                                     (robberCoord != null && tileCoord == robberCoord)
@@ -155,8 +157,8 @@ fun HexBoard(
                             return@detectTapGestures
                         }
 
-                        // Normal mode:
-                        // 1) Try edge (for roads)
+
+
                         if (onEdgeTap != null && highlightEdges.isNotEmpty()) {
                             val eKey = findNearestEdge(
                                 tap = tapOffset,
@@ -170,16 +172,16 @@ fun HexBoard(
                             }
                         }
 
-                        // 2) Vertex (for settlements)
+
                         val vKey = findNearestVertex(
                             tap = tapOffset,
                             vertexPositions = vertexPositions,
                             maxDistancePx = hexSize * 0.55f
                         )
                         if (vKey != null) {
-                            // If we are highlighting vertices (build-settlement mode),
-                            // only allow taps on highlighted ones. In setup (no highlights),
-                            // allow any vertex.
+
+
+
                             if (highlightVertices.isEmpty() || vKey in highlightVertices) {
                                 onVertexTap(vKey)
                             }
@@ -202,11 +204,11 @@ fun HexBoard(
                 textSize = hexSize * 0.22f
                 isAntiAlias = true
             }
-            // --- Tiles ---
+
             tiles.forEach { tile ->
                 val center = tileCenters[tile.coord] ?: return@forEach
 
-                // Hex polygon for clipping/border
+
                 val path = Path().apply {
                     for (corner in 0 until 6) {
                         val off = hexCornerOffsetBoard(hexSize * 0.95f, corner)
@@ -218,14 +220,14 @@ fun HexBoard(
                 }
 
                 val texture = when (val lm = tile.landmark) {
-                    null -> tileTextures[tile.resource]                       // normal resource tile
+                    null -> tileTextures[tile.resource]
                     else -> landmarkTextures[lm] ?: tileTextures[tile.resource]
                 }
 
                 if (texture != null) {
-                    // Slightly larger than the hex so the art fills it, even with padding
+
                     val radius = hexSize * 0.95f
-                    val scale = 1.4f   // tweak this if you want the art bigger/smaller
+                    val scale = 1.4f
 
                     val drawWidth = (radius * 2f * scale).toInt()
                     val drawHeight = (radius * 2f * scale).toInt()
@@ -243,53 +245,57 @@ fun HexBoard(
                         )
                     }
                 } else {
-                    // Fallback: flat color if somehow no texture
+
                     drawPath(
                         path = path,
                         color = tile.resource.toTileColor()
                     )
                 }
 
-                // Black outline around the hex
+
                 drawPath(
                     path = path,
                     color = Color.Black,
                     style = Stroke(width = tileStrokeWidth)
                 )
 
-                // Robber ring
-                if (robberCoord != null && robberCoord == tile.coord) {
-                    drawCircle(
-                        color = Color.Black.copy(alpha = 0.35f),
-                        radius = hexSize * 0.45f,
-                        center = center,
-                        style = Stroke(width = hexSize * 0.08f)
-                    )
-                }
 
-                // --- Number token disc on top of the tile ---
+
+
                 val isLake = tile.resource == Resource.LAKE
                 val hasNumber = tile.number != 0
 
                 if (!isLake && hasNumber) {
                     val tokenRadius = hexSize * 0.32f
 
-                    // light fill
+
                     drawCircle(
                         color = Color(0xFFFFD592),
                         radius = tokenRadius,
                         center = center
                     )
 
-                    // ring (same color or change if you want contrast)
+
                     drawCircle(
                         color = Color(0xFFFFD592),
                         radius = tokenRadius,
                         center = center,
                         style = Stroke(width = hexSize * 0.03f)
                     )
+                    if (robberCoord != null && robberCoord == tile.coord) {
+                        val iconSize = (hexSize * 0.9f).toInt()
+                        val topLeft = IntOffset(
+                            (center.x - iconSize / 2f).toInt(),
+                            (center.y - iconSize / 2f).toInt()
+                        )
 
-                    // number text on top of the disc
+                        drawImage(
+                            image = robberIcon,
+                            dstSize = IntSize(iconSize, iconSize),
+                            dstOffset = topLeft
+                        )
+                    }
+
                     drawContext.canvas.nativeCanvas.drawText(
                         tile.number.toString(),
                         center.x,
@@ -299,12 +305,12 @@ fun HexBoard(
                 }
             }
 
-            // --- Ports: show 5 resource icons in a ring around each port vertex ---
+
             portResources.forEach { (vKey, res) ->
                 val pos = vertexPositions[vKey] ?: return@forEach
                 val icon = portIcons[res] ?: return@forEach
 
-                // subtle circle behind to make it pop
+
                 drawCircle(
                     color = Color.Black.copy(alpha = 0.35f),
                     radius = hexSize * 0.45f,
@@ -324,7 +330,7 @@ fun HexBoard(
                 )
             }
 
-            // Highlight edges (build-road mode)
+
             highlightEdges.forEach { eKey ->
                 val edge = graph.edges[eKey]
                 if (edge != null) {
@@ -342,7 +348,7 @@ fun HexBoard(
                 }
             }
 
-            // Highlight vertices (build-settlement mode)
+
             highlightVertices.forEach { vKey ->
                 val pos = vertexPositions[vKey]
                 if (pos != null) {
@@ -355,11 +361,11 @@ fun HexBoard(
                 }
             }
 
-            // --- Roads + Settlements ---
+
             roomState.players.values.forEach { player ->
                 val color = colorForPlayer(roomState, player.id)
 
-                // Roads
+
                 player.roads.forEach { eKey ->
                     val edge = graph.edges[eKey]
                     if (edge != null) {
@@ -377,7 +383,7 @@ fun HexBoard(
                     }
                 }
 
-                // Settlements
+
                 player.settlements.forEach { vKey ->
                     val pos = vertexPositions[vKey]
                     if (pos != null) {
@@ -390,7 +396,7 @@ fun HexBoard(
                 }
             }
 
-            // Optional: faint dots at vertices to help tapping
+
             vertexPositions.values.forEach { pos ->
                 drawCircle(
                     color = Color.Black.copy(alpha = 0.20f),
@@ -402,19 +408,19 @@ fun HexBoard(
     }
 }
 
-/* ---------- Geometry helpers ---------- */
+
 
 private fun hexToPixelBoard(coord: HexCoord, hexSize: Float): Offset {
-    // pointy-top axial layout
+
     val x = hexSize * (sqrt(3f) * coord.q + sqrt(3f) / 2f * coord.r)
     val y = hexSize * (3f / 2f * coord.r)
     return Offset(x, y)
 }
 
 private fun hexCornerOffsetBoard(hexSize: Float, cornerIndex: Int): Offset {
-    // 0..5 around hex, pointy-top.
-    // Must match vertexTriple/canonicalVertex, which use neighbors
-    // in directions (corner, corner-1).
+
+
+
     val angleDeg = 30f - 60f * cornerIndex
     val angleRad = Math.toRadians(angleDeg.toDouble()).toFloat()
     return Offset(
@@ -473,13 +479,13 @@ private fun computeVertexPositions(
         val baseCenter = tileCenters[baseCoord]
 
         if (baseCenter != null) {
-            // Normal case: canonical base hex exists on the board
+
             val off = hexCornerOffsetBoard(hexSize * 0.95f, key.corner)
             result[key] = baseCenter + off
         } else {
-            // Border case: canonical base hex is off-board.
-            // Use one of the real tiles touching this vertex, and find
-            // which of its local corners maps to this canonical vertex key.
+
+
+
             val candidateCoord = vertex.tileCoords
                 .sortedWith(compareBy<HexCoord> { it.q }.thenBy { it.r })
                 .firstOrNull()
@@ -501,7 +507,7 @@ private fun computeVertexPositions(
             }
 
             if (!placed) {
-                // Ultimate fallback: average centers of all touching tiles
+
                 val centers = vertex.tileCoords.mapNotNull { tileCenters[it] }
                 if (centers.isNotEmpty()) {
                     var sx = 0f
@@ -540,7 +546,7 @@ private fun computeEdgeCenters(
     return result
 }
 
-/* ---------- Hit testing ---------- */
+
 
 private fun findNearestVertex(
     tap: Offset,
@@ -586,9 +592,7 @@ private fun findNearestEdge(
     return bestKey
 }
 
-/**
- * Squared distance from point P to segment AB.
- */
+
 private fun distanceToSegmentSquared(p: Offset, a: Offset, b: Offset): Float {
     val abx = b.x - a.x
     val aby = b.y - a.y
@@ -597,7 +601,7 @@ private fun distanceToSegmentSquared(p: Offset, a: Offset, b: Offset): Float {
 
     val abLen2 = abx * abx + aby * aby
     if (abLen2 == 0f) {
-        // edge collapsed, treat like a point
+
         return apx * apx + apy * apy
     }
 
@@ -618,11 +622,11 @@ private fun distanceToSegmentSquared(p: Offset, a: Offset, b: Offset): Float {
 private fun colorForPlayer(roomState: RoomState, playerId: String): Color {
     val p = roomState.players[playerId]
 
-    // Prefer the profile color if set
+
     val fromProfile = p?.color?.let { Color(it) }
     if (fromProfile != null) return fromProfile
 
-    // Fallback: deterministic defaults if no profile color
+
     return if (playerId == "host") Color(0xFFE53935) else Color(0xFFB0BEC5)
 }
 private fun findNearestTile(
@@ -645,7 +649,7 @@ private fun findNearestTile(
     return bestCoord
 }
 
-/* ---------- Colors per resource ---------- */
+
 
 private fun Resource.toTileColor(): Color =
     when (this) {

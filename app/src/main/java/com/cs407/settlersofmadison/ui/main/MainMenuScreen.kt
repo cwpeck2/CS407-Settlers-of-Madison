@@ -7,8 +7,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material3.*
@@ -29,9 +31,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.cs407.settlersofmadison.R
+import com.cs407.settlersofmadison.ui.lobby.PlayerAvatar
 import com.cs407.settlersofmadison.ui.lobby.ProfileSettings
 import com.cs407.settlersofmadison.ui.lobby.ProfileViewModel
 
@@ -43,24 +45,18 @@ fun MainMenuScreen(
     profileVm: ProfileViewModel
 ) {
     val profile by profileVm.profile.collectAsState(initial = ProfileSettings())
+    var showHowToPlay by remember { mutableStateOf(false) }
 
     MenuBackground {
         Box(Modifier.fillMaxSize()) {
             TopScrim(height = 220.dp)
             TopTitleBar()
 
-            // 🔹 Big profile circle, slightly below the very top
-            ProfileBadge(
-                profile = profile,
-                onClick = onProfileClick,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 48.dp, end = 16.dp)
-            )
 
             Column(
                 modifier = Modifier
                     .align(Alignment.Center)
+                    .offset(y = 32.dp)
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -78,12 +74,159 @@ fun MainMenuScreen(
                     imageRes = R.drawable.join_room,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+
+                Box(
+                    modifier = Modifier.clickable(onClick = onProfileClick)
+                ) {
+                    PlayerAvatar(
+                        label = profile.nickname.ifBlank { "You" },
+                        active = true,
+                        isHost = true,
+                        ready = false,
+                        colorArgb = profile.preferredColor,
+                        avatarUri = profile.avatarUri
+                    )
+                }
+
+
+                TextButton(
+                    onClick = { showHowToPlay = true },
+                    modifier = Modifier
+                        .padding(top = 8.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color(0xFFF2D3A0))
+                        .padding(horizontal = 18.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        "How to Play",
+                        color = Color.Black,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
             }
         }
     }
+
+    if (showHowToPlay) {
+        HowToPlayDialog(onDismiss = { showHowToPlay = false })
+    }
 }
 
-/* ---------- Visual helpers ---------- */
+
+
+@Composable
+private fun HowToPlayDialog(onDismiss: () -> Unit) {
+    val scroll = rememberScrollState()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Got it")
+            }
+        },
+        title = {
+            Text("How to Play", style = MaterialTheme.typography.titleLarge)
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(scroll),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Goal",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    "Earn 10 victory points before your opponent by building across Madison, " +
+                            "collecting resources, and using special victory cards."
+                )
+
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Turn Structure",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text("On your turn:")
+                Bullet("Roll the dice to generate resources for any tiles with that number.")
+                Bullet("If a 7 (Badger Patrol) is rolled, players with too many cards must discard and you move the robber.")
+                Bullet("After rolling, you may trade, build roads/settlements, or play victory cards.")
+                Bullet("Tap \"End Turn\" when you’re done.")
+
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Resources",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text("Tiles produce these UW-themed resources:")
+                Bullet("Concrete – from construction sites around campus.")
+                Bullet("Students – purple student tiles.")
+                Bullet("Union Chairs – classic terrace chairs.")
+                Bullet("Cheese Curds – Wisconsin’s finest snack.")
+                Bullet("Bucky – special red tiles themed around the mascot.")
+
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Building",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Bullet("Place settlements on corners where three tiles meet.")
+                Bullet("Roads are built along edges extending out from your settlements.")
+                Bullet("You start with free setup placements; after that, builds cost resources.")
+                Bullet("Your network must connect to where you’re trying to build.")
+
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Trading",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Bullet("Use the Trade button to offer resources to your opponent.")
+                Bullet("Flamingo Run acts like the bank: trade several of one resource for one of another.")
+                Bullet("Ports and Bascom tokens can improve your trade rates.")
+
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Victory Cards",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text("Buy victory cards with Students, Chairs, and Cheese Curds. On your turn, after rolling, you can:")
+                Bullet("Bike Path – build two roads for free.")
+                Bullet("Badger Spirit – gain 1 victory point.")
+                Bullet("UWPD – move the robber to any tile.")
+                Bullet("Badger Merch – choose any 2 resources.")
+
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Winning",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    "You earn points from settlements, cities, and some victory cards. " +
+                            "First player to 10 points wins the game."
+                )
+            }
+        }
+    )
+}
+
+@Composable
+private fun Bullet(text: String) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text("•", style = MaterialTheme.typography.bodyMedium)
+        Text(text, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+
 
 @Composable
 private fun MenuBackground(content: @Composable () -> Unit) {
@@ -155,6 +298,7 @@ private fun TopTitleBar() {
     }
 }
 
+
 @Composable
 private fun ProfileBadge(
     profile: ProfileSettings,
@@ -167,7 +311,7 @@ private fun ProfileBadge(
     ) {
         Box(
             modifier = Modifier
-                .size(72.dp)                // 🔹 bigger circle
+                .size(72.dp)
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.55f))
                 .clickable(onClick = onClick),

@@ -20,10 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 
-/**
- * Pause/settings dialog.
- * Just shows player name and basic buttons.
- */
+
 @Composable
 fun PauseDialog(
     showDialog: Boolean,

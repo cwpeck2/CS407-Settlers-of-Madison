@@ -44,14 +44,14 @@ fun JoinLobbyScreen(
     val hostColor = remoteProfile.preferredColor
     val hostAvatar = remoteProfile.avatarUri
 
-    // When host sends START_GAME, this flips true → navigate to Game
+
     LaunchedEffect(gameStarted) {
         if (gameStarted) {
             onGameStarted()
         }
     }
 
-    // NEW: send our profile to the host when connected
+
     LaunchedEffect(isConnected, profile) {
         if (isConnected) {
             vm.sendLobbyProfile("guest", profile)
@@ -98,17 +98,17 @@ fun JoinLobbyScreen(
                         horizontalArrangement = Arrangement.spacedBy(48.dp),
                         verticalAlignment = Alignment.Top
                     ) {
-                        // Host avatar (remote side)
+
                         PlayerAvatar(
                             label = hostLabel,
                             active = isConnected,
                             isHost = true,
-                            ready = peerReady,    // host “ready”
+                            ready = peerReady,
                             colorArgb = hostColor,
                             avatarUri = hostAvatar
                         )
 
-                        // Guest avatar (local profile)
+
                         PlayerAvatar(
                             label = guestLabel,
                             active = true,

@@ -36,21 +36,25 @@ class P2PService(
     private val _messages = MutableStateFlow<List<String>>(emptyList())
     val messages: StateFlow<List<String>> = _messages
 
-    // remote "ready" status (other device)
+
     private val _peerReady = MutableStateFlow(false)
     val peerReady: StateFlow<Boolean> = _peerReady
 
-    // "start game" signal from host to guest
+
     private val _gameStarted = MutableStateFlow(false)
     val gameStarted: StateFlow<Boolean> = _gameStarted
 
-    // NEW: Shared seed for board generation
+
     private val _gameSeed = MutableStateFlow<Long>(0L)
     val gameSeed: StateFlow<Long> = _gameSeed
 
-    // Generic incoming messages (everything that isn't READY/START_GAME/LEAVE)
+
     private val _incoming = MutableSharedFlow<String>()
     val incoming: SharedFlow<String> = _incoming
+
+
+    private val _peerLeft = MutableSharedFlow<Unit>()
+    val peerLeft: SharedFlow<Unit> = _peerLeft
 
     private fun setState(newState: ConnState) {
         scope.launch(Dispatchers.Main) {
@@ -124,12 +128,20 @@ class P2PService(
             try {
                 BufferedReader(InputStreamReader(s.getInputStream())).use { br ->
                     while (isActive && !closed.get()) {
-                        val raw = br.readLine() ?: break
+
+                        val raw = br.readLine()
+                        if (raw == null) {
+
+                            append("Peer disconnected.")
+                            _peerLeft.emit(Unit)
+                            break
+                        }
+
                         val line = raw.trim()
                         append("RX: $line")
 
                         when {
-                            // CHANGED: Parse Seed from START_GAME message
+
                             line.startsWith("START_GAME") -> {
                                 val parts = line.split(":")
                                 val seed = if (parts.size > 1) parts[1].toLongOrNull() ?: 0L else 0L
@@ -145,11 +157,13 @@ class P2PService(
                                 }
                             }
                             line == "LEAVE" -> {
+
                                 append("Peer left the lobby.")
+                                _peerLeft.emit(Unit)
                                 break
                             }
                             else -> {
-                                // Forward anything else to the game layer
+
                                 _incoming.emit(line)
                             }
                         }
@@ -183,22 +197,20 @@ class P2PService(
         }
     }
 
-    // Local device toggled ready
+
     fun setReady(ready: Boolean) {
         send(if (ready) "READY:1" else "READY:0")
     }
 
-    // CHANGED: Host sends seed to guest
+
     fun sendStartGame(seed: Long) {
-        // First update local flows so LobbyViewModel sees the correct seed immediately
         _gameSeed.value = seed
         _gameStarted.value = true
-
-        // Then send to the peer (still async inside send())
         send("START_GAME:$seed")
     }
 
     fun leave() {
+
         send("LEAVE")
         close()
     }

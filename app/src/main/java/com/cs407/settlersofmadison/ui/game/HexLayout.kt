@@ -8,13 +8,7 @@ object HexLayout {
     private val SQRT3 = sqrt(3f)
     private data class FractionalHex(val q: Float, val r: Float, val s: Float)
 
-    /**
-     * hex_to_pixel: axial (q,r) -> screen pixel Offset
-     *
-     * Same as Red Blob's formula for pointy-top axial:
-     *   x = size * (sqrt(3) * q + sqrt(3)/2 * r)
-     *   y = size * (3/2 * r)
-     */
+
     fun hexToPixel(hex: Hex): Offset {
         val x = (SQRT3 * hex.q + SQRT3 / 2f * hex.r) * SIZE
         val y = (3f / 2f * hex.r) * SIZE
@@ -22,13 +16,13 @@ object HexLayout {
     }
 
     fun pixelToHex(p: Offset): Hex {
-        // Undo scale (and origin=0)
+
         val x = p.x / SIZE
         val y = p.y / SIZE
 
-        // Inverse matrix from Red Blob (pointy-top)
-        // q = (sqrt(3)/3 * x - 1/3 * y)
-        // r = (2/3 * y)
+
+
+
         val qf = (SQRT3 / 3f * x - 1f / 3f * y)
         val rf = (2f / 3f * y)
         val sf = -qf - rf

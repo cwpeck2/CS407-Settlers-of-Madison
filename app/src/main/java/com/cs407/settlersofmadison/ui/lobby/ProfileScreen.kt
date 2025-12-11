@@ -36,14 +36,14 @@ fun ProfileScreen(
     var selectedColor by rememberSaveable { mutableStateOf(profileState.preferredColor) }
     var avatarUriString by rememberSaveable { mutableStateOf(profileState.avatarUri) }
 
-    // Keep local editable state in sync if ViewModel changes underneath
+
     LaunchedEffect(profileState) {
         nickname = profileState.nickname
         selectedColor = profileState.preferredColor
         avatarUriString = profileState.avatarUri
     }
 
-    // Image picker for avatar
+
     val pickImageLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
@@ -53,11 +53,11 @@ fun ProfileScreen(
     }
 
     val colorOptions: List<Long> = listOf(
-        0xFFE53935, // red
-        0xFF1E88E5, // blue
-        0xFF43A047, // green
-        0xFFFDD835, // yellow
-        0xFF8E24AA  // purple
+        0xFFE53935,
+        0xFF1E88E5,
+        0xFF43A047,
+        0xFFFDD835,
+        0xFF8E24AA
     ).map { it.toLong() }
 
     Scaffold(
@@ -86,14 +86,14 @@ fun ProfileScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
 
-                // ---------- Avatar + edit pencil ----------
+
                 Box(
                     modifier = Modifier
                         .padding(top = 8.dp)
                         .size(140.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    // Main circular avatar
+
                     Surface(
                         modifier = Modifier
                             .size(120.dp)
@@ -120,7 +120,7 @@ fun ProfileScreen(
                         }
                     }
 
-                    // Pencil overlay button
+
                     Surface(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
@@ -149,7 +149,7 @@ fun ProfileScreen(
                     }
                 }
 
-                // ---------- Nickname field ----------
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -186,7 +186,7 @@ fun ProfileScreen(
                     }
                 }
 
-                // ---------- Preferred color chips ----------
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -247,7 +247,7 @@ fun ProfileScreen(
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                // ---------- Done button ----------
+
                 Button(
                     onClick = {
                         vm.updateAll(

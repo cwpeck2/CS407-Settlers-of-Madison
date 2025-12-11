@@ -19,7 +19,7 @@ import com.cs407.settlersofmadison.ui.main.MainMenuScreen
 fun AppNav() {
     val navController = rememberNavController()
 
-    // ONE shared Lobby VM + ONE shared Profile VM
+
     val lobbyVm: LobbyViewModel = viewModel()
     val profileVm: ProfileViewModel = viewModel()
 

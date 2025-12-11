@@ -1,4 +1,4 @@
-package com.cs407.settlersofmadison.ui.lobby // <-- keep or adjust to your package
+package com.cs407.settlersofmadison.ui.lobby
 
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -6,16 +6,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-// Shared profile settings used by GameViewModel.applyLocalProfile(...)
+
 data class ProfileSettings(
     val nickname: String = "",
-    val preferredColor: Long? = null,   // ARGB long
-    val avatarUri: String? = null       // String URI for profile picture
+    val preferredColor: Long? = null,
+    val avatarUri: String? = null
 )
 
 class ProfileViewModel : ViewModel() {
 
-    // IMPORTANT: this is MutableStateFlow<ProfileSettings>, not Any
+
     private val _profile = MutableStateFlow(ProfileSettings())
     val profile: StateFlow<ProfileSettings> = _profile.asStateFlow()
 
@@ -31,7 +31,7 @@ class ProfileViewModel : ViewModel() {
         _profile.update { it.copy(avatarUri = uri) }
     }
 
-    /** Used when you press "Done" on the profile screen */
+
     fun updateAll(nickname: String, color: Long?, avatarUri: String?) {
         _profile.value = ProfileSettings(
             nickname = nickname,

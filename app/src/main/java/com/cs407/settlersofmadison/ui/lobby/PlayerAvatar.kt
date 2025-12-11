@@ -29,17 +29,17 @@ fun PlayerAvatar(
     active: Boolean,
     isHost: Boolean,
     ready: Boolean,
-    // preferred color + optional avatar URI
+
     colorArgb: Long? = null,
     avatarUri: String? = null,
-    // NEW:
+
     modifier: Modifier = Modifier,
     showEditIcon: Boolean = false,
     onClick: (() -> Unit)? = null
 ) {
     val ringColor = when {
         !active -> Color.Gray.copy(alpha = 0.5f)
-        ready   -> Color(0xFF21C35E)  // green “ready”
+        ready   -> Color(0xFF21C35E)
         colorArgb != null -> Color(colorArgb)
         else -> MaterialTheme.colorScheme.primary
     }
@@ -52,7 +52,7 @@ fun PlayerAvatar(
             modifier = modifier.size(80.dp),
             contentAlignment = Alignment.Center
         ) {
-            // The circular avatar itself (clickable if onClick != null)
+
             Box(
                 modifier = Modifier
                     .matchParentSize()
@@ -89,7 +89,7 @@ fun PlayerAvatar(
                 }
             }
 
-            // Little pencil overlay for profile screen ONLY
+
             if (showEditIcon && onClick != null) {
                 androidx.compose.material3.Icon(
                     imageVector = Icons.Filled.Edit,

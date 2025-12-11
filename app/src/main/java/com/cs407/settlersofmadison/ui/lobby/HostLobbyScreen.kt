@@ -42,7 +42,7 @@ fun HostLobbyScreen(
     val guestColor = remoteProfile.preferredColor
     val guestAvatar = remoteProfile.avatarUri
 
-    // NEW: whenever we are connected AND our profile changes, send it to the guest
+
     LaunchedEffect(isConnected, profile) {
         if (isConnected) {
             vm.sendLobbyProfile("host", profile)
@@ -89,17 +89,17 @@ fun HostLobbyScreen(
                         horizontalArrangement = Arrangement.spacedBy(48.dp),
                         verticalAlignment = Alignment.Top
                     ) {
-                        // LOCAL (host) avatar uses profile
+
                         PlayerAvatar(
                             label = hostLabel,
                             active = true,
                             isHost = true,
-                            ready = true,   // host always “ready”
+                            ready = true,
                             colorArgb = hostColor,
                             avatarUri = hostAvatar
                         )
 
-                        // REMOTE (guest) – use remoteProfile if we have it
+
                         PlayerAvatar(
                             label = guestLabel,
                             active = isConnected,
